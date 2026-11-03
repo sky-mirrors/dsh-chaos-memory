@@ -32,13 +32,16 @@ Conversation text
 
 | Item | Result | Evidence |
 |---|---|---|
-| Unit tests | **74 / 74 passing** | `node --test tests/*.test.js` |
-| Plugin contract | **18 / 18 passing** (`name`/`inject`/`apply` + 4 tools + end-to-end + auto write/inject + host LLM wiring + db path + event dedupe + per-db turn) | `tests/plugin.test.js` K1–K18 |
+| Unit tests | **77 / 77 passing** | `node --test tests/*.test.js` |
+| Plugin contract | **19 / 19 passing** (`name`/`inject`/`apply` + 4 tools + end-to-end + auto write/inject + host LLM wiring + db path + event dedupe + per-db turn + session budget) | `tests/plugin.test.js` K1–K19 |
 | Database path | one database per session `header.cwd`; different cwds are isolated | K16 |
 | Event dedupe | auto channel + `chaos_write` on the same sentence → one event, `duplicate` | K17 |
 | Per-db turn | session A's seq=100 does not shift session B's `valid_from` | K18 |
 | Host assembly | `chaos` sits in the web profile tree alongside `llm` and `dsh-session` | `dsh --profile web --dump-config` |
 | Tools visible in the UI | **verified** (called `chaos_status` in a real session) | user confirmation |
+| Concurrent writes | 4 processes × 100 rows into one db → **400/400 stored, all ids unique** | multi-process probe (one-off, removed) |
+| Ids never reused | still writable after a row was deleted | `tests/store.test.js` C8 |
+| Session budget | one session's cumulative injection stops at the cap and falls back to a gap hint; injected entries yield | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
 | unspoken (rule-based) | training set 12/12, **holdout 0/10** | `scripts/unspoken-bench.js` |
 
 ### Historical (not re-run in this session)
@@ -232,7 +235,7 @@ chaos/
     fidelity.js       decay / divergence / negotiation wording / revision chains
     extract.js        rule-based extractor (pattern table + SLOTS allowlist, zero-cost baseline)
     extract-llm.js    LLM extractor (three gates over model output; includes the unspoken item)
-  tests/              74 cases, 8 files
+  tests/              77 cases, 8 files
   scripts/
     ingest.js         ingest real dialogue + statistics
     llm-probe.js      real-model extraction probe (empty replies / recall / false positives)
@@ -254,7 +257,7 @@ Tables: `event` (source of truth, append-only), `claim` (bitemporal view), `asse
 ## Verification
 
 ```bash
-node --test tests/*.test.js                    # 74 unit tests
+node --test tests/*.test.js                    # 77 unit tests
 node scripts/verify-all.js                     # six system checks, no external dependencies
 node scripts/unspoken-bench.js                 # unspoken, rule-based: training / holdout
 DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm   # unspoken, LLM version

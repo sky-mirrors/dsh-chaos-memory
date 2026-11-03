@@ -72,3 +72,25 @@ test('P5 持久化：关闭重开数据仍在', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('P8 已注入过的条目降权，把位置让给还没露过面的', () => {
+  const db = openDb(':memory:')
+  const src = '说好了陪你看店，我养了一只猫叫团子'
+  const eid = appendEvent(db, 1, 'turn.user', 'user', src)
+  ingestClaim(
+    db,
+    cand({ slot: 'promise.shop', value: '陪你看店', quote: '说好了陪你看店', kind: 'commitment', evidence: [eid], validFrom: 1, sourceText: src }),
+    1
+  )
+  ingestClaim(
+    db,
+    cand({ slot: 'user.pet.name', value: '团子', quote: '叫团子', evidence: [eid], validFrom: 1, sourceText: src }),
+    1
+  )
+
+  const first = assemble(db, '', 10, 200)
+  assert.equal(first.length, 2, '两条短记忆都该装得下')
+
+  const second = assemble(db, '', 10, 200, new Map([[first[0].id, 1]]))
+  assert.notEqual(second[0].id, first[0].id, '已注入过的那条要让位')
+})

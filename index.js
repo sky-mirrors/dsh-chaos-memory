@@ -17,6 +17,7 @@ import { assemble, render } from './src/potential.js'
 import { negotiable, negotiationLine } from './src/fidelity.js'
 import { SLOTS, extract, extractUnspoken } from './src/extract.js'
 import { buildPrompt, parseCandidates } from './src/extract-llm.js'
+import { SESSION_BUDGET } from './src/constants.js'
 
 export const name = 'chaos'
 export const inject = ['tools', 'sessions', 'llm']
@@ -135,16 +136,37 @@ export function apply(ctx) {
   // 契约来源：system-prompt/assemble（assembly.contexts 的 { name, text, interpolate } 条目），
   // 与 dsh-working-directory 的用法一致。
   // query 传空 → 走涌现模式（Φ 排序）：未兑现的承诺、没被回答的问题、没说出口的话才会自己浮上来。
+  //
+  // 会话预算：注入是按会话累计的。每个会话有自己的预算和「已注入」表——
+  // 已注入过的条目降权（让位置给新的），累计到 SESSION_BUDGET 后只给缺口提示，
+  // 不再每轮重复往上下文里塞同一批记忆。
+  const budgets = new Map()
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
     const session = context.agent?.session
-    const block = render(assemble(getDb(session), '', clockOf(session), 200))
+    const key = session?.id ?? '__no-session__'
+    const st = budgets.get(key) ?? { spent: 0, seen: new Map() }
+
+    if (st.spent >= SESSION_BUDGET) {
+      assembly.contexts.unshift({
+        name: 'chaos:gap',
+        text: '<chaos-gap>本会话的记忆注入预算已用完；还需要的话用 chaos_recall 按需取。</chaos-gap>',
+        interpolate: false,
+      })
+      return assembly
+    }
+
+    const items = assemble(getDb(session), '', clockOf(session), 200, st.seen)
+    const block = render(items)
     if (block) {
       assembly.contexts.unshift({
         name: 'chaos:memory',
         text: `<chaos>\n${block}\n</chaos>`,
         interpolate: false,
       })
+      st.spent += block.length
+      for (const it of items) st.seen.set(it.id, (st.seen.get(it.id) ?? 0) + 1)
+      budgets.set(key, st)
     }
     return assembly
   })
@@ -250,5 +272,6 @@ export function apply(ctx) {
     for (const db of dbs.values()) db.close()
     dbs.clear()
     clocks.clear()
+    budgets.clear()
   }
 }

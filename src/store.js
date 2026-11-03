@@ -64,9 +64,13 @@ function cmp(a, b) {
   return 0
 }
 
+// ID 由「已用过的最大序号」推，不用 COUNT(*)：删过行或回滚残留会让计数回落，
+// 再写入就撞主键。MAX 只会单调上升。
 function nextId(db) {
-  const n = db.prepare('SELECT COUNT(*) AS n FROM claim').get().n
-  return `c${String(Number(n) + 1).padStart(5, '0')}`
+  const row = db
+    .prepare("SELECT COALESCE(MAX(CAST(SUBSTR(id, 2) AS INTEGER)), 0) AS n FROM claim")
+    .get()
+  return `c${String(Number(row.n) + 1).padStart(5, '0')}`
 }
 
 function insert(db, cand, nowTx, state) {
@@ -98,8 +102,26 @@ function insert(db, cand, nowTx, state) {
   return id
 }
 
-/** 返回 inserted / corroborated / superseded / deferred / duplicate / rejected */
+/**
+ * 返回 inserted / corroborated / superseded / deferred / duplicate / rejected
+ *
+ * 整个写入在一把写锁里完成（BEGIN IMMEDIATE）：读「同槽位现有主张」到写回之间，
+ * 别的连接不能插进来改，否则两边都判「我是新的」，同时置 active 或同时 supersede。
+ * 抢不到锁就等 busy_timeout；超时直接抛 SQLITE_BUSY——显式失败，不是静默覆盖。
+ */
 export function ingestClaim(db, cand, nowTx) {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const rc = ingestWithin(db, cand, nowTx)
+    db.exec('COMMIT')
+    return rc
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+}
+
+function ingestWithin(db, cand, nowTx) {
   if (checkGate(cand.sourceText ?? '', cand.quote)) return 'rejected'
   if (!quoteVerifiable(db, cand)) return 'rejected'
   if (valueSupportRatio(cand.value, cand.quote) < SUPPORT_THRESHOLD) return 'rejected'

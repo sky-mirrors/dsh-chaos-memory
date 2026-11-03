@@ -32,13 +32,16 @@
 
 | 项 | 结果 | 依据 |
 |---|---|---|
-| 单元测试 | **74 / 74 通过** | `node --test tests/*.test.js` |
-| 插件契约 | **18 / 18 通过**（`name`/`inject`/`apply` + 4 工具 + 端到端 + 自动写入/注入 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库） | `tests/plugin.test.js` K1–K18 |
+| 单元测试 | **77 / 77 通过** | `node --test tests/*.test.js` |
+| 插件契约 | **19 / 19 通过**（`name`/`inject`/`apply` + 4 工具 + 端到端 + 自动写入/注入 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 会话预算） | `tests/plugin.test.js` K1–K19 |
 | 库路径 | 按会话 `header.cwd` 分库，不同 cwd 互不可见 | K16 |
 | event 去重 | 自动通道与 `chaos_write` 记同一句 → 一条 event、`duplicate` | K17 |
 | turn 分库 | A 会话 seq=100 不影响 B 会话的 `valid_from` | K18 |
 | 宿主装配 | `chaos` 与 `llm`、`dsh-session` 同在 web profile 配置树 | `dsh --profile web --dump-config` |
 | 工具在 UI 里可见 | **已验证**（真实会话里调用过 `chaos_status`） | 用户确认 |
+| 并发写保护 | 4 进程 × 100 条同库并发写 → **400/400 落库、ID 全唯一** | 多进程探针（一次性，已删） |
+| ID 不复用 | 删过行后仍能写入，不撞主键 | `tests/store.test.js` C8 |
+| 会话预算帽 | 单会话累计到顶后只发缺口提示；已注入条目降权让位 | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
 | unspoken 规则版 | 训练集 12/12，**留出集 0/10** | `scripts/unspoken-bench.js` |
 
 ### 历史记录（本次未复测）
@@ -231,7 +234,7 @@ chaos/
     fidelity.js       衰减 / 背离 / 协商话术 / 改口链
     extract.js        规则抽取器（模式表 + SLOTS 白名单，零成本基线）
     extract-llm.js    LLM 抽取器（三道门校验模型输出；含 unspoken 判断项）
-  tests/              74 个用例，8 个文件
+  tests/              77 个用例，8 个文件
   scripts/
     ingest.js         真实对话灌入 + 统计
     llm-probe.js      真实模型抽取探针（空返回率 / 召回 / 误抽）
@@ -253,7 +256,7 @@ chaos/
 ## 验证
 
 ```bash
-node --test tests/*.test.js                    # 74 个单元测试
+node --test tests/*.test.js                    # 77 个单元测试
 node scripts/verify-all.js                     # 六项系统验证，零外部依赖
 node scripts/unspoken-bench.js                 # unspoken 规则版：训练集 / 留出集
 DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm   # unspoken LLM 版

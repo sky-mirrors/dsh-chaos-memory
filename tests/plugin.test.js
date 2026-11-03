@@ -219,8 +219,12 @@ test('K10 没有文本块的消息不写空事件', async () => {
 
 // ---------- 自动注入通道：不依赖模型主动调 chaos_recall ----------
 
-const assembleInto = async (listeners, assembly = { contexts: [] }) =>
-  listeners.get('system-prompt/assemble')(assembly, {}, async () => assembly)
+const assembleInto = async (listeners, session = undefined, assembly = { contexts: [] }) =>
+  listeners.get('system-prompt/assemble')(
+    assembly,
+    session === undefined ? {} : { agent: { session } },
+    async () => assembly
+  )
 
 test('K11 系统提示装配时自动注入记忆块', async () => {
   const { ctx, listeners } = fakeCtx()
@@ -249,6 +253,30 @@ test('K12 没有可注入内容时不产生空块', async () => {
   process.chdir(keep)
   rmSync(empty, { recursive: true, force: true })
   assert.equal(out.contexts.length, 0)
+})
+
+test('K19 单会话注入预算到顶后不再堆记忆，改给缺口提示', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-budget-'))
+  const { ctx, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const session = sessionNoRoute('s-budget', own)
+  const onEvent = listeners.get('session/event')
+
+  onEvent(session, userEvent(1, '我养了一只猫叫团子'))
+  onEvent(session, userEvent(2, '我生日是三月十七'))
+  onEvent(session, userEvent(3, '我是画画的'))
+  onEvent(session, userEvent(4, '我最怕的是黑'))
+  onEvent(session, userEvent(5, '我在杭州住了三年'))
+
+  let last
+  for (let i = 0; i < 30; i++) last = await assembleInto(listeners, session)
+
+  const gap = last.contexts.find((c) => c.name === 'chaos:gap')
+  assert.ok(gap, '预算到顶后应给出缺口提示')
+  assert.match(gap.text, /chaos_recall/)
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
 })
 
 // ---------- LLM 抽取：走宿主的 ctx.llm（宿主的 key），异步不阻塞 ----------

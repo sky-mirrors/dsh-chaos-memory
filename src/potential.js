@@ -3,6 +3,7 @@
 // 旁路模式（涌现）：query 无明确指向时按 Φ 排序，未了结的承诺才可能浮上来。
 import { bm25Scores } from './retrieval.js'
 import { currentClaims } from './store.js'
+import { INJECTED_PENALTY } from './constants.js'
 
 export const TAU = 100
 export const TAU_S = 300
@@ -79,7 +80,7 @@ export function phiFromR(r, claim, now, threads, w = W) {
   return base * faith
 }
 
-export function assemble(db, query, now, budget = 200) {
+export function assemble(db, query, now, budget = 200, seen = new Map()) {
   const claims = currentClaims(db)
   if (!claims.length) return []
 
@@ -89,11 +90,15 @@ export function assemble(db, query, now, budget = 200) {
   const rs = raw.map((x) => x / max)
   const threads = deriveThreads(db, now)
 
-  const scored = claims.map((c, i) => ({
-    r: rs[i],
-    phi: phiFromR(rs[i], c, now, threads),
-    c,
-  }))
+  // 已在本会话注入过的条目打折，把位置让给还没露过面的；模式判断仍用原始 R。
+  const scored = claims.map((c, i) => {
+    const penalty = seen.has(c.id) ? INJECTED_PENALTY : 1
+    return {
+      r: rs[i] * penalty,
+      phi: phiFromR(rs[i], c, now, threads) * penalty,
+      c,
+    }
+  })
 
   if (Math.max(...rs) >= R_GATE) {
     scored.sort((x, y) => y.r - x.r || x.c.id.localeCompare(y.c.id))

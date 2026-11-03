@@ -103,3 +103,29 @@ test('C7 用户纠正只降 AI 侧保真度', () => {
   assert.equal(c.fidelity_user, 1)
   assert.ok(c.fidelity_ai < 1)
 })
+
+test('C8 删过行之后 ID 不复用，写入不撞主键', () => {
+  const db = openDb(':memory:')
+  const src = '我养了一只猫叫团子，我是画画的'
+  const eid = appendEvent(db, 1, 'turn.user', 'user', src)
+
+  assert.equal(
+    ingestClaim(db, cand({ slot: 'user.pet.name', value: '团子', quote: '叫团子', evidence: [eid], validFrom: 1, sourceText: src }), 1),
+    'inserted'
+  )
+  assert.equal(
+    ingestClaim(db, cand({ slot: 'user.job', value: '画画的', quote: '我是画画的', evidence: [eid], validFrom: 1, sourceText: src }), 1),
+    'inserted'
+  )
+
+  // 清理 / 回滚残留会让 COUNT(*) 回落，ID 就撞上已存在的那条。
+  db.prepare("DELETE FROM claim WHERE slot='user.pet.name'").run()
+
+  const rc = ingestClaim(
+    db,
+    cand({ slot: 'user.habit', value: '画画', quote: '我是画画的', evidence: [eid], validFrom: 2, sourceText: src }),
+    2
+  )
+  assert.equal(rc, 'inserted')
+  assert.equal(currentClaims(db).length, 2)
+})
