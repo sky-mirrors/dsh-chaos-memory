@@ -46,6 +46,9 @@
 | 未答问题 | 用户提问且 AI 没答上 → `assistant/message` 到达时落一条 `question` | K21 / K22 |
 | 作废 | `chaos_retract` → `state=retracted`、`tx_to` 关闭，不再注入/派生线程 | K23 / C9 |
 | 装配日志 | 每次注入写 `assembly_log`（claim_id / score / reason / packet_hash） | `tests/potential.test.js` P9 |
+| 真实宿主事件流 | headless 0.2.1-rc.5：`user/message` → 写库（1 event + `user.pet.name=团子`） | 「真实宿主」一节 |
+| 真实宿主注入 | 第 2 轮起请求体出现 `<chaos>` 块并写 `assembly_log`；**第 1 轮不注入**（装配早于用户消息） | 同上 |
+| 宿主加载 | profile 依赖键必须是包名 `dsh-chaos-memory`；本地目录安装的默认键是目录名，会 `Cannot find package` 不激活 | 同上 |
 | unspoken 规则版 | 训练集 12/12，**留出集 0/10** | `scripts/unspoken-bench.js` |
 
 ### 历史记录（本次未复测）
@@ -65,12 +68,20 @@
 
 注：`scripts/verify-all.js` 曾因 `ingestClaim` 的事务嵌套在 `c44dc8c` 后无法运行，本次已修复；2026-11-03 重跑结果：入库 1,042 ms、检索 P50 0.33 ms / P95 0.74 ms、注入预算 200 字符 / 0 超限、状态分布 `{"active":24,"deferred":3}`。
 
+### 真实宿主（2026-11-03 实测）
+
+环境：`dsh` 0.2.1-rc.5（`D:\Chaos\dsh-host`）+ 本地 Anthropic Messages 假服务（`DEEPSEEK_BASE_URL` 指向 `127.0.0.1`），headless 跑真实会话。
+
+- **加载**：profile 依赖键必须是包名 `dsh-chaos-memory`。用本地目录安装时依赖键会变成目录名（`chaos`），而 `cordis.patch.yml` 按包名插入 → `Cannot find package 'dsh-chaos-memory'`，插件不激活。本机 web/desktop profile 已按别名修正。
+- **写入**：一轮真实会话后库内出现 1 条 event + `user.pet.name=团子`，evidence 指向该 event。
+- **注入**：第 1 轮的系统提示装配发生在用户消息之前（库为空 → 不注入）；第 2 轮起假模型收到的请求体里有 `<chaos>\n【你记得的关于对方的事】\n- 团子\n</chaos>`，`assembly_log` 同步落行（turn_id / claim_id / emergence / packet_hash）。
+- **未触发**：三轮里假模型没有收到任何 `chaos-extract` 请求——`extractWithHost` 在 `user/message` 时刻拿不到路由而返回，真实宿主目前只跑规则版。
+
 ### 未验证
 
 | 项 | 缺什么 |
 |---|---|
-| 真实 dsh 会话的事件流 | 需要一次真实会话观测 `session/event`、`system-prompt/assemble` 是否按契约触发；本机无凭据 |
-| 真实宿主下的 LLM 抽取 | 单测用假 `ctx.llm` 验证接线；`dsh headless` 在本机止于 `MISSING_CREDENTIAL` |
+| 真实宿主下的 LLM 抽取 | 假模型回放三轮均未收到任何抽取请求：`user/message` 时刻 `requestHeader()` 拿不到路由（或 `prepareCall` 未发出请求），真实宿主目前只跑规则版 |
 | LLM 版 unspoken 留出集成绩 | 需 `DEEPSEEK_API_KEY`；本地只验证了管线（理想判断输入下 10/10 不被门禁误杀） |
 | LLM 全量成本 | 18 次 114 秒，线性外推 24 万条约 25 小时 |
 
@@ -97,7 +108,7 @@ dsh plugin --profile web add git+https://github.com/sky-mirrors/dsh-chaos-memory
 dsh --profile web --dump-config | grep -A1 chaos
 ```
 
-开发时改用本地目录：`dsh plugin --profile web add /path/to/chaos`。
+开发时改用本地目录：`dsh plugin --profile web add /path/to/chaos`。注意依赖键会取目录名（如 `chaos`），而 `cordis.patch.yml` 按包名 `dsh-chaos-memory` 插入——把依赖键改成包名，或在 profile 的 `node_modules` 里补同名软链，否则宿主报 `Cannot find package` 且插件不激活。
 
 三个坑，都踩过：
 

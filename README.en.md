@@ -64,12 +64,20 @@ Conversation text
 
 Note: `scripts/verify-all.js` could not run after `c44dc8c` (nested transaction in `ingestClaim`); it is fixed now. Re-run on 2026-11-03: ingest 1,042 ms, retrieval P50 0.33 ms / P95 0.74 ms, injection max 200 chars / 0 over budget, states `{"active":24,"deferred":3}`.
 
+### Real host (measured 2026-11-03)
+
+Environment: `dsh` 0.2.1-rc.5 (`D:\Chaos\dsh-host`) plus a local Anthropic Messages stub (`DEEPSEEK_BASE_URL` → `127.0.0.1`), real headless sessions.
+
+- **Loading**: the profile dependency key must be the package name `dsh-chaos-memory`. A local-directory install keys it by directory name (`chaos`), while `cordis.patch.yml` inserts by package name → `Cannot find package 'dsh-chaos-memory'` and the plugin stays inactive. Fixed locally for the web/desktop profiles.
+- **Write**: after one real turn the db holds 1 event + `user.pet.name=团子`, evidence pointing at that event.
+- **Inject**: turn 1 assembles the system prompt before the user message (empty db → nothing injected); from turn 2 the request body carries `<chaos>\n【你记得的关于对方的事】\n- 团子\n</chaos>` and `assembly_log` gets a row (turn_id / claim_id / emergence / packet_hash).
+- **Not firing**: across three turns the stub received no `chaos-extract` request — `extractWithHost` returns because no route is available at `user/message` time, so only rule-based extraction runs in the real host.
+
 ### Not verified
 
 | Item | Missing |
 |---|---|
-| Real session event stream | needs one real session observing `session/event` and `system-prompt/assemble`; no credentials on this machine |
-| LLM extraction under the real host | unit tests use a fake `ctx.llm`; `dsh headless` stops at `MISSING_CREDENTIAL` here |
+| LLM extraction under the real host | three stub-replayed turns received no extraction request: `requestHeader()` has no route at `user/message` time (or `prepareCall` never issues the request); real host currently runs rules only |
 | LLM holdout score for unspoken | needs `DEEPSEEK_API_KEY`; only the pipeline is verified (10/10 with ideal judgments) |
 | Full LLM cost | 18 calls took 114 s; linear extrapolation ≈ 25 h for 240k rows |
 
@@ -98,7 +106,7 @@ dsh plugin --profile web add git+https://github.com/sky-mirrors/dsh-chaos-memory
 dsh --profile web --dump-config | grep -A1 chaos
 ```
 
-For development, point at a local checkout instead: `dsh plugin --profile web add /path/to/chaos`.
+For development, point at a local checkout instead: `dsh plugin --profile web add /path/to/chaos`. Note the dependency key becomes the directory name (`chaos`), while `cordis.patch.yml` inserts by package name `dsh-chaos-memory` — rename the dependency key or add a same-named symlink under the profile's `node_modules`, otherwise the host reports `Cannot find package` and the plugin never activates.
 
 Three traps, all hit before:
 
