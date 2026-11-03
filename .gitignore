@@ -1,0 +1,12 @@
+node_modules/
+package-lock.json
+
+# 运行时数据（记忆库）
+.rivet/
+*.db
+*.db-wal
+*.db-shm
+
+# 实验数据集与脚本产物
+data/
+*.log

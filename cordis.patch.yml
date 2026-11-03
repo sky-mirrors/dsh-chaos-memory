@@ -1,0 +1,5 @@
+# Chaos bundle patch：以一个 insert 把插件行加进 profile 树。
+# id 是插件的内部标识；name 是 import 时用的包说明符，必须是包名。
+- insert:
+    - id: chaos
+      name: dsh-chaos-memory
