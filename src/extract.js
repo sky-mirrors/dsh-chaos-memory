@@ -47,7 +47,7 @@ const GRIEVANCE_RE = /算了，?不想说|你是不是根本不在意|每次都�
 // 疑问句里的"什么/哪/谁…"不是事实，是提问
 const QUESTION_HEAD = /^(什么|哪|谁|多少|几|怎么|为什么|啥|来着|一样)/
 
-function shortHash(s) {
+export function shortHash(s) {
   return createHash('sha1').update(s).digest('hex').slice(0, 8)
 }
 

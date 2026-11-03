@@ -22,7 +22,7 @@
 | 项 | 结果 | 依据 |
 |---|---|---|
 | **dsh 插件契约** | **6/6 通过**（`name`/`inject`/`apply` + 4 工具注册 + 端到端） | `tests/plugin.test.js` |
-| 单元测试 | **57 / 57 通过** | `node --test tests/*.test.js` |
+| 单元测试 | **62 / 62 通过** | `node --test tests/*.test.js` |
 | 规模入库 | 240,500 条 / **437 ms** | `scripts/verify-all.js` |
 | 检索延迟 | P50 **0.28 ms** / P95 **0.49 ms** | 200 次 assemble |
 | 注入预算 | 最大 200 字符，超限 **0/10** | budget=200 |
@@ -118,6 +118,8 @@ const cands = await extractLLM(text, {
 
 实测 3,000 样本对抗：合法 750/750 通过，伪造引文 / 错值 / 瞎编槽位 **各 0/750 放行**。
 
+模型输出里还有第二类项：`{"kind":"unspoken","quote":"..."}`——只回答「这段话里有没有想说却没说出口」。这一项**不接受模型给的槽位和值**：槽位由原文哈希派生（`unspoken.<hash>`，与规则版同址，同一句话不会落成两条主张），值就是原文整句。模型只能决定「判不判」，不能决定「写什么」，所以它胡编也污染不了库。规则版 `UNSPOKEN_RE` 保留为零成本兜底。
+
 ### 写入：三道门，只在一个地方
 
 ```
@@ -181,8 +183,8 @@ chaos/
     potential.js      线程派生 + Φ + 双模式装配
     fidelity.js       衰减 / 背离 / 协商话术 / 改口链
     extract.js        规则抽取器（模式表，零成本基线）
-    extract-llm.js    LLM 抽取器（三道门校验模型输出）
-  tests/              57 个用例，8 个文件
+    extract-llm.js    LLM 抽取器（三道门校验模型输出；含 unspoken 判断项）
+  tests/              62 个用例，8 个文件
   scripts/
     ingest.js         真实对话灌入 + 统计
     llm-probe.js      真实模型抽取探针（空返回率 / 召回 / 误抽）
@@ -203,7 +205,7 @@ chaos/
 ## 验证
 
 ```bash
-node --test tests/*.test.js          # 57 个单元测试
+node --test tests/*.test.js          # 62 个单元测试
 node scripts/verify-all.js           # 六项系统验证，零外部依赖
 DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 token）
 ```
@@ -212,7 +214,7 @@ DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 toke
 
 ## 未做
 
-- **unspoken 的泛化能力**：正则版在留出集上召回 **0/10**（训练集 12/12，但那是照着正则写的）。它能认出固定句式，换一种说法就失效。生产环境应交给 LLM 抽取器判断语义，规则版只作离线兜底。基准见 `scripts/unspoken-bench.js`。
+- **unspoken 的泛化能力**：规则版在留出集上召回 **0/10**（训练集 12/12，但那是照着正则写的）——它能认出固定句式，换一种说法就失效。语义判断已交给 LLM 抽取器的 `unspoken` 项，规则版只作零成本兜底。基准：`node scripts/unspoken-bench.js`（规则版）/ `DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm`（LLM 版）。**LLM 版在真实模型上的留出集成绩未测**——本地无密钥，目前只验证了管线：理想判断输入下留出集 10/10 不被门禁误杀。
 
 ---
 

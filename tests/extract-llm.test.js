@@ -88,3 +88,62 @@ test('L8 模型返回伪造成分时，端到端仍被拦住', async () => {
   const cands = await extractLLM(TEXT, { callModel: stub, slots: SLOTS })
   assert.deepEqual(cands, [])
 })
+
+// ---------- unspoken 判断项 ----------
+const UNSPOKEN_TEXT = '有件事不知道该不该说，你会不会觉得我烦'
+
+test('L9 prompt 要求单独判断 unspoken', () => {
+  assert.ok(buildPrompt(UNSPOKEN_TEXT, SLOTS).includes('unspoken'))
+})
+
+test('L10 unspoken 项：槽位与值由本地派生，模型给什么都不采信', () => {
+  const raw = JSON.stringify([
+    { kind: 'unspoken', quote: '不知道该不该说', slot: 'user.bank.password', value: '账密' },
+  ])
+  const got = parseCandidates(raw, UNSPOKEN_TEXT, SLOTS)
+  assert.equal(got.length, 1)
+  assert.equal(got[0].kind, 'unspoken')
+  assert.ok(got[0].slot.startsWith('unspoken.'))
+  assert.equal(got[0].value, UNSPOKEN_TEXT)
+  assert.equal(got[0].quote, UNSPOKEN_TEXT)
+})
+
+test('L11 unspoken 的 quote 不在原文中 → 丢弃', () => {
+  const raw = JSON.stringify([{ kind: 'unspoken', quote: '我不太确定这话该不该讲' }])
+  assert.deepEqual(parseCandidates(raw, UNSPOKEN_TEXT, SLOTS), [])
+})
+
+test('L12 同一轮多个 unspoken 项 → 只留一条', () => {
+  const raw = JSON.stringify([
+    { kind: 'unspoken', quote: '有件事' },
+    { kind: 'unspoken', quote: '不知道该不该说' },
+  ])
+  const got = parseCandidates(raw, UNSPOKEN_TEXT, SLOTS)
+  assert.equal(got.filter((c) => c.kind === 'unspoken').length, 1)
+})
+
+test('L13 端到端：unspoken 候选能过三道门入库', async () => {
+  const stub = async () => JSON.stringify([{ kind: 'unspoken', quote: '不知道该不该说' }])
+  const cands = await extractLLM(UNSPOKEN_TEXT, { callModel: stub, slots: SLOTS })
+  assert.equal(cands.length, 1)
+
+  const db = openDb(':memory:')
+  const eid = appendEvent(db, 1, 'turn.user', 'user', UNSPOKEN_TEXT)
+  const rc = ingestClaim(
+    db,
+    {
+      slot: cands[0].slot,
+      value: cands[0].value,
+      quote: cands[0].quote,
+      evidence: [eid],
+      validFrom: 1,
+      kind: cands[0].kind,
+      sourceText: UNSPOKEN_TEXT,
+      confidence: 0.8,
+      sourcePriority: 70,
+    },
+    1
+  )
+  assert.equal(rc, 'inserted')
+  assert.equal(currentClaims(db)[0].kind, 'unspoken')
+})
