@@ -18,11 +18,19 @@ export const inject = ['tools', 'sessions', 'llm']
 const text = (s) => [{ type: 'text', text: s }]
 
 export function apply(ctx) {
-  let db = null
+  const dbs = new Map()
   let clock = 0
 
-  const getDb = () => {
-    if (!db) db = openDb(join(process.cwd(), '.rivet', 'chaos', 'chaos.db'))
+  // 库跟着会话的工作目录走，不跟着进程启动目录走。
+  // SessionHeader.cwd 是可选字段（dsh-session/lib/types/types.d.ts:70），拿不到时退回进程 cwd。
+  const cwdOf = (session) => session?.header?.cwd ?? process.cwd()
+  const getDb = (session) => {
+    const path = join(cwdOf(session), '.rivet', 'chaos', 'chaos.db')
+    let db = dbs.get(path)
+    if (!db) {
+      db = openDb(path)
+      dbs.set(path, db)
+    }
     return db
   }
 
@@ -57,7 +65,7 @@ export function apply(ctx) {
       .map((b) => b.text)
       .join('')
     for (const c of parseCandidates(raw, text, SLOTS)) {
-      ingestClaim(getDb(), {
+      ingestClaim(getDb(session), {
         slot: c.slot,
         value: c.value,
         quote: c.quote,
@@ -90,9 +98,9 @@ export function apply(ctx) {
 
     const t = Math.max(clock, event.seq)
     clock = t
-    const eid = appendEvent(getDb(), t, 'turn.user', 'user', text)
+    const eid = appendEvent(getDb(session), t, 'turn.user', 'user', text)
     for (const c of [...extract(text), ...extractUnspoken(text)]) {
-      ingestClaim(getDb(), {
+      ingestClaim(getDb(session), {
         slot: c.slot,
         value: c.value,
         quote: c.quote,
@@ -113,9 +121,9 @@ export function apply(ctx) {
   // 契约来源：system-prompt/assemble（assembly.contexts 的 { name, text, interpolate } 条目），
   // 与 dsh-working-directory 的用法一致。
   // query 传空 → 走涌现模式（Φ 排序）：未兑现的承诺、没被回答的问题、没说出口的话才会自己浮上来。
-  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
-    const block = render(assemble(getDb(), '', clock, 200))
+    const block = render(assemble(getDb(context.agent?.session), '', clock, 200))
     if (block) {
       assembly.contexts.unshift({
         name: 'chaos:memory',
@@ -143,10 +151,10 @@ export function apply(ctx) {
       schema: { type: 'string' },
       render: (_a, v) => text(v),
     },
-    async execute(args) {
+    async execute(args, exec) {
       const t = args.turn ?? clock + 1
-      const eid = appendEvent(getDb(), t, 'turn.user', 'user', args.source_text)
-      const rc = ingestClaim(getDb(), {
+      const eid = appendEvent(getDb(exec.agent.session), t, 'turn.user', 'user', args.source_text)
+      const rc = ingestClaim(getDb(exec.agent.session), {
         slot: args.slot,
         value: args.value,
         quote: args.quote,
@@ -173,8 +181,8 @@ export function apply(ctx) {
       schema: { type: 'string' },
       render: (_a, v) => text(v),
     },
-    async execute(args) {
-      const items = assemble(getDb(), args.query, clock, args.budget ?? 200)
+    async execute(args, exec) {
+      const items = assemble(getDb(exec.agent.session), args.query, clock, args.budget ?? 200)
       const block = render(items)
       return block ? `<chaos>\n${block}\n</chaos>` : '（没有可注入的记忆）'
     },
@@ -188,9 +196,9 @@ export function apply(ctx) {
       schema: { type: 'string' },
       render: (_a, v) => text(v),
     },
-    async execute() {
-      const s = statusSummary(getDb())
-      const neg = negotiable(getDb())
+    async execute(_args, exec) {
+      const s = statusSummary(getDb(exec.agent.session))
+      const neg = negotiable(getDb(exec.agent.session))
       const lines = [`主张 ${s.total} 条`, `状态分布 ${JSON.stringify(s.byState)}`]
       if (neg.length) {
         lines.push(`待协商 ${neg.length} 条：`)
@@ -211,17 +219,15 @@ export function apply(ctx) {
       schema: { type: 'string' },
       render: (_a, v) => text(v),
     },
-    async execute(args) {
-      applyCorrection(getDb(), args.id, args.penalty ?? 0.25)
+    async execute(args, exec) {
+      applyCorrection(getDb(exec.agent.session), args.id, args.penalty ?? 0.25)
       return `已纠正 ${args.id}`
     },
   }))
 
-  // 返回 disposer：Cordis 卸载插件时关闭连接。
+  // 返回 disposer：Cordis 卸载插件时关闭所有连接。
   return () => {
-    if (db) {
-      db.close()
-      db = null
-    }
+    for (const db of dbs.values()) db.close()
+    dbs.clear()
   }
 }

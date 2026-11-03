@@ -14,9 +14,14 @@ const mod = await import('../index.js')
 function fakeCtx(llm = undefined) {
   const registered = []
   const listeners = new Map()
+  const execOf = (id = 's-tool', cwd = dir) => ({ agent: { session: { id, header: { cwd } } } })
   return {
     ctx: {
-      tools: { register: (t) => registered.push(t) },
+      // 真实宿主会给每个 execute 传 exec（含 agent.session）；默认补齐，测试里可显式覆盖。
+      tools: {
+        register: (t) =>
+          registered.push({ ...t, execute: (args, exec = execOf()) => t.execute(args, exec) }),
+      },
       on: (name, fn) => {
         listeners.set(name, fn)
       },
@@ -25,6 +30,7 @@ function fakeCtx(llm = undefined) {
     },
     registered,
     listeners,
+    execOf,
   }
 }
 
@@ -284,4 +290,35 @@ test('K15 宿主 LLM 失败不影响规则版结果，也不抛到会话', async
   const r = await registered[1].execute({ query: '我那只猫叫什么' })
   assert.match(r, /团子/)
   dispose()
+})
+
+// ---------- 库路径：跟会话 cwd 走，不跟进程启动目录走 ----------
+
+test('K16 不同 cwd 的会话各自开库，互不可见', async () => {
+  const a = mkdtempSync(join(tmpdir(), 'chaos-cwd-a-'))
+  const b = mkdtempSync(join(tmpdir(), 'chaos-cwd-b-'))
+  const { ctx, registered, execOf } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const write = registered[0]
+  const recall = registered[1]
+
+  await write.execute(
+    {
+      slot: 'user.pet.name',
+      value: '团子',
+      quote: '我养了一只猫叫团子',
+      source_text: '我养了一只猫叫团子',
+    },
+    execOf('s-a', a)
+  )
+
+  const inB = await recall.execute({ query: '我那只猫叫什么' }, execOf('s-b', b))
+  assert.match(inB, /没有可注入的记忆/)
+
+  const inA = await recall.execute({ query: '我那只猫叫什么' }, execOf('s-a', a))
+  assert.match(inA, /团子/)
+
+  dispose()
+  rmSync(a, { recursive: true, force: true })
+  rmSync(b, { recursive: true, force: true })
 })
