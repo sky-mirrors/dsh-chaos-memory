@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+import { openDb } from '../src/db.js'
+
 const origCwd = process.cwd()
 const dir = mkdtempSync(join(tmpdir(), 'chaos-dsh-'))
 process.chdir(dir)
@@ -42,10 +44,17 @@ const userEvent = (seq, text, kind = 'user') => ({
 })
 
 // 会话的模型路由来自 session.requestHeader().config（dsh-session-title 就是这么拿的）。
-const sessionWithRoute = (id, route = { provider: 'deepseek', model: 'deepseek-chat' }) => ({
+const sessionWithRoute = (id, route = { provider: 'deepseek', model: 'deepseek-chat' }, cwd = dir) => ({
   id,
-  header: { cwd: dir },
+  header: { cwd },
   requestHeader: () => ({ config: route }),
+})
+
+// 没有路由的会话：自动通道只跑规则版（用来单独观察 clock / event 行为）。
+const sessionNoRoute = (id, cwd = dir) => ({
+  id,
+  header: { cwd },
+  requestHeader: () => undefined,
 })
 
 // 宿主 LLM 的替身：只吐一条完整文本块，形状与 StreamChunk 一致。
@@ -317,6 +326,52 @@ test('K16 不同 cwd 的会话各自开库，互不可见', async () => {
 
   const inA = await recall.execute({ query: '我那只猫叫什么' }, execOf('s-a', a))
   assert.match(inA, /团子/)
+
+  dispose()
+  rmSync(a, { recursive: true, force: true })
+  rmSync(b, { recursive: true, force: true })
+})
+
+// ---------- 同一句只记一条 event；turn 时间轴按库分开 ----------
+
+test('K17 自动写入后模型再调 chaos_write，同一句不重复记 event', async () => {
+  // 独立目录：共享库里有别的用例写过的同一句，会让本轮变成「跨轮互证」而不是重复。
+  const own = mkdtempSync(join(tmpdir(), 'chaos-ev-'))
+  const text = '我养了一只猫叫团子，它一打雷就往床底下钻'
+  const { ctx, registered, listeners, execOf } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const session = sessionNoRoute('s-ev', own)
+
+  listeners.get('session/event')(session, userEvent(900, text))
+  const rc = await registered[0].execute(
+    { slot: 'user.pet.name', value: '团子', quote: '叫团子', source_text: text },
+    execOf('s-ev', own)
+  )
+  assert.match(rc, /duplicate/)
+
+  const db = openDb(join(own, '.rivet', 'chaos', 'chaos.db'))
+  const n = db.prepare('SELECT COUNT(*) AS n FROM event WHERE payload=?').get(text).n
+  db.close()
+  assert.equal(Number(n), 1, '同一轮同一句只能有一条 event')
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
+})
+
+test('K18 turn 时间轴按库分开：别的会话的高 seq 不污染这边', async () => {
+  const a = mkdtempSync(join(tmpdir(), 'chaos-clock-a-'))
+  const b = mkdtempSync(join(tmpdir(), 'chaos-clock-b-'))
+  const { ctx, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const onEvent = listeners.get('session/event')
+
+  onEvent(sessionNoRoute('s-a', a), userEvent(100, '我养了一只猫叫团子'))
+  onEvent(sessionNoRoute('s-b', b), userEvent(5, '我生日是三月十七'))
+
+  const dbB = openDb(join(b, '.rivet', 'chaos', 'chaos.db'))
+  const row = dbB.prepare('SELECT valid_from FROM claim').get()
+  dbB.close()
+  assert.equal(Number(row.valid_from), 5, 'B 库的 turn 必须是自己的 5，不是 A 的 100')
 
   dispose()
   rmSync(a, { recursive: true, force: true })

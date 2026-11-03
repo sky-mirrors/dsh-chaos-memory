@@ -23,6 +23,24 @@ export function appendEvent(db, ts, kind, actor, payload) {
   return Number(r.lastInsertRowid)
 }
 
+/**
+ * 同一 (ts, payload) 只存一条 event。
+ * 自动写入与 chaos_write 都会记同一句话——真相源只该有一份，否则
+ * 同一事实攒成两条 evidence，合并代数会把它当成互证（corroborated）。
+ */
+export function ensureEvent(db, ts, kind, actor, payload) {
+  const row = db
+    .prepare('SELECT id FROM event WHERE ts=? AND payload=? ORDER BY id DESC LIMIT 1')
+    .get(ts, payload)
+  if (row) return Number(row.id)
+  return appendEvent(db, ts, kind, actor, payload)
+}
+
+/** 库内最新一轮的 turn；空库为 0。 */
+export function latestTurn(db) {
+  return Number(db.prepare('SELECT COALESCE(MAX(ts), 0) AS t FROM event').get().t)
+}
+
 function quoteVerifiable(db, cand) {
   if (!cand.quote || !cand.quote.trim()) return false
   for (const id of cand.evidence) {

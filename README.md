@@ -22,10 +22,10 @@
 
 | 项 | 结果 | 依据 |
 |---|---|---|
-| **dsh 插件契约** | **16/16 通过**（`name`/`inject`/`apply` + 4 工具注册 + 端到端 + 自动写入/注入 + 宿主 LLM + 库路径） | `tests/plugin.test.js` |
+| **dsh 插件契约** | **18/18 通过**（`name`/`inject`/`apply` + 4 工具注册 + 端到端 + 自动写入/注入 + 宿主 LLM + 库路径 + event 去重 + turn 分库） | `tests/plugin.test.js` |
 | 库路径 | 按会话 `header.cwd` 分库，不同 cwd 互不可见 | `tests/plugin.test.js` K16 |
 | 宿主装配 | `chaos` 与 `llm` / `dsh-session` 同在 web profile 配置树 | `dsh --profile web --dump-config` |
-| 单元测试 | **72 / 72 通过** | `node --test tests/*.test.js` |
+| 单元测试 | **74 / 74 通过** | `node --test tests/*.test.js` |
 | 规模入库 | 240,500 条 / **437 ms** | `scripts/verify-all.js` |
 | 检索延迟 | P50 **0.28 ms** / P95 **0.49 ms** | 200 次 assemble |
 | 注入预算 | 最大 200 字符，超限 **0/10** | budget=200 |
@@ -165,6 +165,10 @@ faith = 0.5 + 0.5 · fidelity_ai
 **模型是外部输入，不多给一分信任。** 它抽出的每一条都要过三道门；即使它完全胡编，也污染不了记忆库。
 
 **闸门只在入口做一次。** 所有校验都在 `ingestClaim` 这一个边界上，内部函数信任结果。
+
+**同一句只记一条 event。** 自动通道与 `chaos_write` 都可能记同一轮的用户原文，所以两边都走 `ensureEvent(db, ts, payload)`：命中就复用 id。否则同一事实携两条 evidence，合并代数会把它当成互证（`corroborated`），凭空抬高置信度。
+
+**turn 时间轴属于库，不属于进程。** clock 按库（`<cwd>/.rivet/chaos/chaos.db`）各一份；共用一个计数会让 A 会话的高 seq 把 B 会话的 `valid_from` 抬到未来。
 
 **批量写入必须包事务。** 24 万条裸写要 **266 秒**（每条 fsync），包 `BEGIN/COMMIT` 后 **437 ms**——608 倍差异。这个缺陷在 `:memory:` 上永远看不见。
 

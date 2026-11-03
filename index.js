@@ -6,7 +6,13 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { openDb } from './src/db.js'
-import { appendEvent, applyCorrection, ingestClaim, statusSummary } from './src/store.js'
+import {
+  applyCorrection,
+  ensureEvent,
+  ingestClaim,
+  latestTurn,
+  statusSummary,
+} from './src/store.js'
 import { assemble, render } from './src/potential.js'
 import { negotiable, negotiationLine } from './src/fidelity.js'
 import { SLOTS, extract, extractUnspoken } from './src/extract.js'
@@ -19,19 +25,26 @@ const text = (s) => [{ type: 'text', text: s }]
 
 export function apply(ctx) {
   const dbs = new Map()
-  let clock = 0
+  // turn 时间轴属于库，不属于插件进程：每个库一份 clock，会话之间不共用一个计数。
+  const clocks = new Map()
 
   // 库跟着会话的工作目录走，不跟着进程启动目录走。
   // SessionHeader.cwd 是可选字段（dsh-session/lib/types/types.d.ts:70），拿不到时退回进程 cwd。
   const cwdOf = (session) => session?.header?.cwd ?? process.cwd()
+  const dbPathOf = (session) => join(cwdOf(session), '.rivet', 'chaos', 'chaos.db')
   const getDb = (session) => {
-    const path = join(cwdOf(session), '.rivet', 'chaos', 'chaos.db')
+    const path = dbPathOf(session)
     let db = dbs.get(path)
     if (!db) {
       db = openDb(path)
       dbs.set(path, db)
     }
     return db
+  }
+  const clockOf = (session) => clocks.get(dbPathOf(session)) ?? 0
+  const bumpClock = (session, t) => {
+    const path = dbPathOf(session)
+    if (t > (clocks.get(path) ?? 0)) clocks.set(path, t)
   }
 
   // LLM 抽取：用宿主的 ctx.llm（宿主的 key），异步跑、不阻塞会话。
@@ -96,11 +109,12 @@ export function apply(ctx) {
     if (seen.has(key)) return
     seen.add(key)
 
-    const t = Math.max(clock, event.seq)
-    clock = t
-    const eid = appendEvent(getDb(session), t, 'turn.user', 'user', text)
+    const t = Math.max(clockOf(session), event.seq)
+    bumpClock(session, t)
+    const db = getDb(session)
+    const eid = ensureEvent(db, t, 'turn.user', 'user', text)
     for (const c of [...extract(text), ...extractUnspoken(text)]) {
-      ingestClaim(getDb(session), {
+      ingestClaim(db, {
         slot: c.slot,
         value: c.value,
         quote: c.quote,
@@ -123,7 +137,8 @@ export function apply(ctx) {
   // query 传空 → 走涌现模式（Φ 排序）：未兑现的承诺、没被回答的问题、没说出口的话才会自己浮上来。
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
-    const block = render(assemble(getDb(context.agent?.session), '', clock, 200))
+    const session = context.agent?.session
+    const block = render(assemble(getDb(session), '', clockOf(session), 200))
     if (block) {
       assembly.contexts.unshift({
         name: 'chaos:memory',
@@ -138,23 +153,26 @@ export function apply(ctx) {
     name: 'chaos_write',
     description:
       '写入一条记忆主张。source_text 是本轮对话原文，quote 必须是它的子串；'
-      + '值若不在引文中会被拒（防抽取失真），引文若不在原文中也会被拒（防伪造）。',
+      + '值若不在引文中会被拒（防抽取失真），引文若不在原文中也会被拒（防伪造）。'
+      + '本条原文若已由自动通道记录，复用那条 event，不重复落库。',
     parameters: {
       slot: { type: 'string', required: true, description: '槽位键，如 user.pet.name / promise.bookstore' },
       value: { type: 'string', required: true, description: '该槽位的值，须是引文的子串' },
       quote: { type: 'string', required: true, description: '支撑这条主张的原文摘录' },
       source_text: { type: 'string', required: true, description: '本轮对话原文' },
       kind: { type: 'string', description: 'fact | commitment | grievance | question | unspoken' },
-      turn: { type: 'number', description: '轮次，省略则自增' },
+      turn: { type: 'number', description: '轮次，省略则沿用库内最新一轮' },
     },
     output: {
       schema: { type: 'string' },
       render: (_a, v) => text(v),
     },
     async execute(args, exec) {
-      const t = args.turn ?? clock + 1
-      const eid = appendEvent(getDb(exec.agent.session), t, 'turn.user', 'user', args.source_text)
-      const rc = ingestClaim(getDb(exec.agent.session), {
+      const session = exec.agent.session
+      const db = getDb(session)
+      const t = args.turn ?? (latestTurn(db) || 1)
+      const eid = ensureEvent(db, t, 'turn.user', 'user', args.source_text)
+      const rc = ingestClaim(db, {
         slot: args.slot,
         value: args.value,
         quote: args.quote,
@@ -165,7 +183,7 @@ export function apply(ctx) {
         confidence: 0.9,
         sourcePriority: 100,
       }, t)
-      clock = Math.max(clock, t)
+      bumpClock(session, t)
       return `${rc}: ${args.slot}`
     },
   }))
@@ -182,7 +200,8 @@ export function apply(ctx) {
       render: (_a, v) => text(v),
     },
     async execute(args, exec) {
-      const items = assemble(getDb(exec.agent.session), args.query, clock, args.budget ?? 200)
+      const session = exec.agent.session
+      const items = assemble(getDb(session), args.query, clockOf(session), args.budget ?? 200)
       const block = render(items)
       return block ? `<chaos>\n${block}\n</chaos>` : '（没有可注入的记忆）'
     },
@@ -197,8 +216,9 @@ export function apply(ctx) {
       render: (_a, v) => text(v),
     },
     async execute(_args, exec) {
-      const s = statusSummary(getDb(exec.agent.session))
-      const neg = negotiable(getDb(exec.agent.session))
+      const session = exec.agent.session
+      const s = statusSummary(getDb(session))
+      const neg = negotiable(getDb(session))
       const lines = [`主张 ${s.total} 条`, `状态分布 ${JSON.stringify(s.byState)}`]
       if (neg.length) {
         lines.push(`待协商 ${neg.length} 条：`)
@@ -229,5 +249,6 @@ export function apply(ctx) {
   return () => {
     for (const db of dbs.values()) db.close()
     dbs.clear()
+    clocks.clear()
   }
 }
