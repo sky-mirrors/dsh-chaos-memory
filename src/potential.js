@@ -1,6 +1,7 @@
 // 势能浮现：线程派生 + 唤醒势 Φ + 双模式装配。
 // 主模式（检索）：query 有明确指向时按相关性排序。
 // 旁路模式（涌现）：query 无明确指向时按 Φ 排序，未了结的承诺才可能浮上来。
+import { createHash } from 'node:crypto'
 import { bm25Scores } from './retrieval.js'
 import { currentClaims } from './store.js'
 import { INJECTED_PENALTY } from './constants.js'
@@ -100,19 +101,44 @@ export function assemble(db, query, now, budget = 200, seen = new Map()) {
     }
   })
 
-  if (Math.max(...rs) >= R_GATE) {
+  const retrieval = Math.max(...rs) >= R_GATE
+  if (retrieval) {
     scored.sort((x, y) => y.r - x.r || x.c.id.localeCompare(y.c.id))
   } else {
     scored.sort((x, y) => y.phi - x.phi || x.c.id.localeCompare(y.c.id))
   }
 
   const out = []
+  const picked = []
   let used = 0
-  for (const { c } of scored) {
+  for (const { c, r, phi } of scored) {
     const cost = c.slot.length + c.value.length + 3
     if (used + cost > budget) continue
     out.push({ slot: c.slot, value: c.value, id: c.id })
+    picked.push({ id: c.id, score: retrieval ? r : phi })
     used += cost
+  }
+
+  // 装配审计：每次注入了什么、按什么分数、哪个模式、整包指纹。
+  // packet_hash 覆盖本包全部条目，同 turn 的多行共享一个指纹。
+  // 整包写在一个事务里：逐条 autocommit 会把每轮装配从 0.3 ms 拖到 9 ms。
+  if (picked.length) {
+    const packetHash = createHash('sha1')
+      .update(out.map((it) => `${it.id}:${it.value}`).join('\n'))
+      .digest('hex')
+      .slice(0, 12)
+    const ins = db.prepare(
+      'INSERT INTO assembly_log(turn_id, claim_id, score, reason, packet_hash) VALUES (?,?,?,?,?)'
+    )
+    const reason = retrieval ? 'retrieval' : 'emergence'
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const p of picked) ins.run(now, p.id, p.score, reason, packetHash)
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
   }
   return out
 }

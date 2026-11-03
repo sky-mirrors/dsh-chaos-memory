@@ -129,3 +129,22 @@ test('C8 删过行之后 ID 不复用，写入不撞主键', () => {
   assert.equal(rc, 'inserted')
   assert.equal(currentClaims(db).length, 2)
 })
+
+test('C9 被新值取代的旧主张标为 superseded，tx_to 关闭', () => {
+  const db = openDb(':memory:')
+  const src1 = '我在杭州住了三年'
+  const e1 = appendEvent(db, 10, 'turn.user', 'user', src1)
+  ingestClaim(db, cand({ slot: 'user.city', value: '杭州', quote: src1, evidence: [e1], validFrom: 10, sourceText: src1 }), 10)
+
+  const src2 = '下个月我要搬去成都了'
+  const e2 = appendEvent(db, 20, 'turn.user', 'user', src2)
+  const rc = ingestClaim(db, cand({ slot: 'user.city', value: '成都', quote: src2, evidence: [e2], validFrom: 20, sourceText: src2 }), 20)
+
+  assert.equal(rc, 'superseded')
+  const old = db.prepare("SELECT state, tx_to FROM claim WHERE value='杭州'").get()
+  const cur = db.prepare("SELECT state, tx_to FROM claim WHERE value='成都'").get()
+  assert.equal(old.state, 'superseded')
+  assert.equal(Number(old.tx_to), 20)
+  assert.equal(cur.state, 'active')
+  assert.equal(cur.tx_to, null)
+})

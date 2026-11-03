@@ -43,6 +43,17 @@ const userEvent = (seq, text, kind = 'user') => ({
   data: { source: { kind }, content: [{ type: 'text', text }] },
 })
 
+// assistant/message 的 shape 取自 dsh-session types.d.ts:331（message: AssistantMessage）。
+const assistantEvent = (seq, text) => ({
+  seq,
+  type: 'assistant/message',
+  data: {
+    turn: 1,
+    step: 1,
+    message: { role: 'assistant', content: [{ type: 'text', text }], source: { kind: 'model' } },
+  },
+})
+
 // 会话的模型路由来自 session.requestHeader().config（dsh-session-title 就是这么拿的）。
 const sessionWithRoute = (id, route = { provider: 'deepseek', model: 'deepseek-chat' }, cwd = dir) => ({
   id,
@@ -90,13 +101,13 @@ test('K1 Cordis 插件导出：name / inject / apply', () => {
   assert.equal(typeof mod.apply, 'function')
 })
 
-test('K2 apply(ctx) 注册 4 个工具', () => {
+test('K2 apply(ctx) 注册 5 个工具', () => {
   const { ctx, registered } = fakeCtx()
   const dispose = mod.apply(ctx)
-  assert.equal(registered.length, 4)
+  assert.equal(registered.length, 5)
   assert.deepEqual(
     registered.map((t) => t.name),
-    ['chaos_write', 'chaos_recall', 'chaos_status', 'chaos_correct']
+    ['chaos_write', 'chaos_recall', 'chaos_status', 'chaos_correct', 'chaos_retract']
   )
   assert.equal(typeof dispose, 'function')
   dispose()
@@ -437,4 +448,71 @@ test('K20 进程重启后 turn 时钟从库内最新轮次续上，改口不被�
   const active = rows.filter((r) => r.tx_to == null && r.state === 'active')
   assert.equal(active.length, 1, '同一槽位只能有一条活动主张')
   assert.equal(active[0].value, '成都', '重启后的新说法必须压过旧值')
+})
+
+// ---------- 未答问题：用户提问 + AI 没答上 ----------
+
+test('K21 用户提问且 AI 没答上时，用 assistant/message 补记一条未答问题', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-unans-'))
+  const { ctx, registered, listeners, execOf } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const session = sessionNoRoute('s-unans', own)
+  const onEvent = listeners.get('session/event')
+
+  onEvent(session, userEvent(1, '你觉得我该不该接这个稿'))
+  const before = await registered[2].execute({}, execOf('s-unans', own))
+  assert.match(before, /主张 0 条/, 'AI 还没回之前不能先落一条问题')
+
+  onEvent(session, assistantEvent(2, '嗯'))
+  const after = await registered[2].execute({}, execOf('s-unans', own))
+  assert.match(after, /主张 1 条/)
+
+  const recall = await registered[1].execute({ query: '该不该接这个稿' }, execOf('s-unans', own))
+  assert.match(recall, /该不该接这个稿/)
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
+})
+
+test('K22 AI 答上了就不记未答问题', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-ans-'))
+  const { ctx, registered, listeners, execOf } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const session = sessionNoRoute('s-ans', own)
+  const onEvent = listeners.get('session/event')
+
+  onEvent(session, userEvent(1, '你觉得我该不该接这个稿'))
+  onEvent(session, assistantEvent(2, '接吧，你最近状态不错，稿子也不难'))
+
+  const status = await registered[2].execute({}, execOf('s-ans', own))
+  assert.match(status, /主张 0 条/)
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
+})
+
+// ---------- 作废：抽错或承诺已兑现 ----------
+
+test('K23 chaos_retract 作废记忆：不再被检索，状态记为 retracted', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-retract-'))
+  const { ctx, registered, listeners, execOf } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const session = sessionNoRoute('s-retract', own)
+  listeners.get('session/event')(session, userEvent(1, '我养了一只猫叫团子'))
+
+  const db = openDb(join(own, '.rivet', 'chaos', 'chaos.db'))
+  const id = db.prepare("SELECT id FROM claim WHERE slot='user.pet.name'").get().id
+  db.close()
+
+  const rc = await registered[4].execute({ id }, execOf('s-retract', own))
+  assert.match(rc, /已作废/)
+
+  const status = await registered[2].execute({}, execOf('s-retract', own))
+  assert.match(status, /retracted/)
+
+  const recall = await registered[1].execute({ query: '我那只猫叫什么' }, execOf('s-retract', own))
+  assert.match(recall, /没有可注入的记忆/)
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
 })

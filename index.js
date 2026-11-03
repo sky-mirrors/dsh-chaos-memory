@@ -11,11 +11,12 @@ import {
   ensureEvent,
   ingestClaim,
   latestTurn,
+  retractClaim,
   statusSummary,
 } from './src/store.js'
 import { assemble, render } from './src/potential.js'
 import { negotiable, negotiationLine } from './src/fidelity.js'
-import { SLOTS, extract, extractUnspoken } from './src/extract.js'
+import { SLOTS, extract, extractUnspoken, unansweredCandidate } from './src/extract.js'
 import { buildPrompt, parseCandidates } from './src/extract-llm.js'
 import { SESSION_BUDGET, SESSION_WINDOW } from './src/constants.js'
 
@@ -107,9 +108,36 @@ export function apply(ctx) {
   // 契约来源：dsh-session 的 session/event（event.seq / data.source.kind / text 块），
   // 消费方式与 dsh-session-title 一致。
   // 规则版先写（同步、零成本，兜底）；LLM 抽取在后台补齐语义项。
-  // （unanswered 需要看下一轮回应，故不在此处派生。）
+  // 「未答问题」要看下一轮回应：用户提问先挂起，assistant/message 到达时判定。
   const seen = new Set()
+  const pendingQuestions = new Map()
   ctx.on('session/event', (session, event) => {
+    const sessionKey = session?.id ?? dbPathOf(session)
+
+    if (event.type === 'assistant/message') {
+      const pending = pendingQuestions.get(sessionKey)
+      if (!pending) return
+      pendingQuestions.delete(sessionKey)
+      const answer = (event.data?.message?.content ?? [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
+      const q = unansweredCandidate(pending.text, answer)
+      if (!q) return
+      ingestClaim(getDb(session), {
+        slot: q.slot,
+        value: q.value,
+        quote: q.quote,
+        evidence: [pending.eid],
+        validFrom: pending.t,
+        kind: q.kind,
+        sourceText: pending.text,
+        confidence: 0.9,
+        sourcePriority: 100,
+      }, pending.t)
+      return
+    }
+
     if (event.type !== 'user/message' || event.data.source.kind !== 'user') return
     const text = event.data.content
       .filter((b) => b.type === 'text')
@@ -138,6 +166,8 @@ export function apply(ctx) {
         sourcePriority: 100,
       }, t)
     }
+    const question = unansweredCandidate(text, '')
+    if (question) pendingQuestions.set(sessionKey, { text, eid, t })
     void extractWithHost(session, text, eid, t).catch((err) => {
       ctx.logger.warn(`chaos: LLM 抽取失败，保留规则版结果: ${String(err)}`)
     })
@@ -285,11 +315,33 @@ export function apply(ctx) {
     },
   }))
 
+  ctx.tools.register(defineTool({
+    name: 'chaos_retract',
+    description:
+      '作废一条记忆（抽错、或承诺已经兑现）。作废后不再注入、不再派生线程；event 原文保留。',
+    parameters: {
+      id: { type: 'string', required: true, description: '主张 id，如 c00001' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_a, v) => text(v),
+    },
+    async execute(args, exec) {
+      const session = exec.agent.session
+      const db = getDb(session)
+      const t = Math.max(clockOf(session) + 1, latestTurn(db))
+      const ok = retractClaim(db, args.id, t)
+      if (ok) bumpClock(session, t)
+      return ok ? `已作废 ${args.id}` : `未作废（不存在或已关闭）: ${args.id}`
+    },
+  }))
+
   // 返回 disposer：Cordis 卸载插件时关闭所有连接。
   return () => {
     for (const db of dbs.values()) db.close()
     dbs.clear()
     clocks.clear()
     budgets.clear()
+    pendingQuestions.clear()
   }
 }

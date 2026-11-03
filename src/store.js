@@ -153,7 +153,7 @@ function ingestWithin(db, cand, nowTx) {
 
   const id = insert(db, cand, nowTx, 'active')
   for (const r of rivals) {
-    db.prepare('UPDATE claim SET tx_to=?, superseded_by=? WHERE id=?').run(nowTx, id, r.id)
+    db.prepare("UPDATE claim SET tx_to=?, superseded_by=?, state='superseded' WHERE id=?").run(nowTx, id, r.id)
   }
   return rivals.length ? 'superseded' : 'inserted'
 }
@@ -169,6 +169,18 @@ export function applyCorrection(db, id, penalty) {
     penalty,
     id
   )
+}
+
+/**
+ * 作废一条当前主张（抽错、或承诺已经兑现）：state=retracted + 关闭 tx_to。
+ * 原文 event 不动；作废后的主张不再进 currentClaims，也不再派生线程。
+ * 返回是否真的命中一条仍活着的主张。
+ */
+export function retractClaim(db, id, nowTx) {
+  const r = db
+    .prepare("UPDATE claim SET state='retracted', tx_to=? WHERE id=? AND tx_to IS NULL")
+    .run(nowTx, id)
+  return Number(r.changes) > 0
 }
 
 export function statusSummary(db) {

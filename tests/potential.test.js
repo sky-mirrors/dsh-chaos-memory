@@ -94,3 +94,24 @@ test('P8 已注入过的条目降权，把位置让给还没露过面的', () =>
   const second = assemble(db, '', 10, 200, new Map([[first[0].id, 1]]))
   assert.notEqual(second[0].id, first[0].id, '已注入过的那条要让位')
 })
+
+test('P9 assemble 把注入的每条主张写进 assembly_log', () => {
+  const db = openDb(':memory:')
+  const src = '我养了一只猫叫团子'
+  const e = appendEvent(db, 10, 'turn.user', 'user', src)
+  ingestClaim(db, cand({ slot: 'user.pet.name', value: '团子', quote: src, evidence: [e], validFrom: 10, sourceText: src }), 10)
+
+  const out = assemble(db, '', 20, 200)
+  assert.equal(out.length, 1)
+
+  const rows = db.prepare('SELECT * FROM assembly_log').all()
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].claim_id, out[0].id)
+  assert.equal(rows[0].reason, 'emergence')
+  assert.equal(Number(rows[0].turn_id), 20)
+  assert.match(rows[0].packet_hash, /^[0-9a-f]{12}$/)
+
+  assemble(db, '我那只猫叫什么', 21, 200)
+  const hit = db.prepare('SELECT reason FROM assembly_log WHERE turn_id=21').get()
+  assert.equal(hit.reason, 'retrieval')
+})

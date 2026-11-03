@@ -32,8 +32,8 @@
 
 | 项 | 结果 | 依据 |
 |---|---|---|
-| 单元测试 | **78 / 78 通过** | `node --test tests/*.test.js` |
-| 插件契约 | **20 / 20 通过**（`name`/`inject`/`apply` + 4 工具 + 端到端 + 自动写入/注入 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 重启续钟 + 会话预算） | `tests/plugin.test.js` K1–K20 |
+| 单元测试 | **83 / 83 通过** | `node --test tests/*.test.js` |
+| 插件契约 | **23 / 23 通过**（`name`/`inject`/`apply` + 5 工具 + 端到端 + 自动写入/注入 + 未答问题 + 作废 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 重启续钟 + 会话预算） | `tests/plugin.test.js` K1–K23 |
 | 库路径 | 按会话 `header.cwd` 分库，不同 cwd 互不可见 | K16 |
 | event 去重 | 自动通道与 `chaos_write` 记同一句 → 一条 event、`duplicate` | K17 |
 | turn 分库 | A 会话 seq=100 不影响 B 会话的 `valid_from` | K18 |
@@ -43,6 +43,9 @@
 | ID 不复用 | 删过行后仍能写入，不撞主键 | `tests/store.test.js` C8 |
 | 会话预算帽 | 窗口内累计到顶后暂停注入、改发缺口提示；**8 轮窗口到期后恢复**，已注入条目降权让位 | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
 | 重启续钟 | 进程重启后 turn 从库内最新轮次续上；新会话 seq=1 的改口仍压过旧值 | `tests/plugin.test.js` K20 |
+| 未答问题 | 用户提问且 AI 没答上 → `assistant/message` 到达时落一条 `question` | K21 / K22 |
+| 作废 | `chaos_retract` → `state=retracted`、`tx_to` 关闭，不再注入/派生线程 | K23 / C9 |
+| 装配日志 | 每次注入写 `assembly_log`（claim_id / score / reason / packet_hash） | `tests/potential.test.js` P9 |
 | unspoken 规则版 | 训练集 12/12，**留出集 0/10** | `scripts/unspoken-bench.js` |
 
 ### 历史记录（本次未复测）
@@ -128,6 +131,9 @@ await chaos_recall({ query: '我那只猫叫什么' })
 
 // 3) 用户纠正：只降 AI 侧保真度
 await chaos_correct({ id: 'c00001', penalty: 0.25 })
+
+// 4) 作废：抽错，或承诺已经兑现
+await chaos_retract({ id: 'c00001' })
 ```
 
 `chaos_write` 的 `turn` 省略时沿用库内最新一轮，所以它和自动通道写的是同一条 event。
@@ -224,7 +230,7 @@ faith = 0.5 + 0.5 · fidelity_ai
 
 ```
 chaos/
-  index.js            dsh 插件入口：Cordis apply(ctx)、两条自动通道、4 个 tool
+  index.js            dsh 插件入口：Cordis apply(ctx)、两条自动通道、5 个 tool
   cordis.patch.yml    bundle patch：把 chaos 行 insert 进 profile 配置树
   package.json        dsh.bundle.patch 指向上面这个文件；依赖版本须与宿主一致
   src/
@@ -259,7 +265,7 @@ chaos/
 ## 验证
 
 ```bash
-node --test tests/*.test.js                    # 78 个单元测试
+node --test tests/*.test.js                    # 83 个单元测试
 node scripts/verify-all.js                     # 六项系统验证，零外部依赖
 node scripts/unspoken-bench.js                 # unspoken 规则版：训练集 / 留出集
 DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm   # unspoken LLM 版

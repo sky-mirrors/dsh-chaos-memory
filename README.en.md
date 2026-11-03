@@ -32,8 +32,8 @@ Conversation text
 
 | Item | Result | Evidence |
 |---|---|---|
-| Unit tests | **78 / 78 passing** | `node --test tests/*.test.js` |
-| Plugin contract | **20 / 20 passing** (`name`/`inject`/`apply` + 4 tools + end-to-end + auto write/inject + host LLM wiring + db path + event dedupe + per-db turn + restart clock + session budget) | `tests/plugin.test.js` K1–K20 |
+| Unit tests | **83 / 83 passing** | `node --test tests/*.test.js` |
+| Plugin contract | **23 / 23 passing** (`name`/`inject`/`apply` + 5 tools + end-to-end + auto write/inject + unanswered questions + retract + host LLM wiring + db path + event dedupe + per-db turn + restart clock + session budget) | `tests/plugin.test.js` K1–K23 |
 | Database path | one database per session `header.cwd`; different cwds are isolated | K16 |
 | Event dedupe | auto channel + `chaos_write` on the same sentence → one event, `duplicate` | K17 |
 | Per-db turn | session A's seq=100 does not shift session B's `valid_from` | K18 |
@@ -43,6 +43,9 @@ Conversation text
 | Ids never reused | still writable after a row was deleted | `tests/store.test.js` C8 |
 | Session budget | injection pauses with a gap hint once the window's cap is spent; **resumes when the 8-turn window rolls over**; injected entries yield | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
 | Restart clock | after a process restart the turn clock resumes from the db's latest turn; a seq=1 revision in a new session still outranks the old value | `tests/plugin.test.js` K20 |
+| Unanswered questions | user asks and the AI does not really answer → a `question` claim is written when `assistant/message` arrives | K21 / K22 |
+| Retract | `chaos_retract` sets `state=retracted`, closes `tx_to`; never injected or turned into a thread again | K23 / C9 |
+| Assembly log | every injection writes `assembly_log` (claim_id / score / reason / packet_hash) | `tests/potential.test.js` P9 |
 | unspoken (rule-based) | training set 12/12, **holdout 0/10** | `scripts/unspoken-bench.js` |
 
 ### Historical (not re-run in this session)
@@ -130,6 +133,9 @@ await chaos_recall({ query: '我那只猫叫什么' })
 
 // 3) Correction: lowers the AI-side fidelity only
 await chaos_correct({ id: 'c00001', penalty: 0.25 })
+
+// 4) Retract: a bad extraction, or a promise that has been kept
+await chaos_retract({ id: 'c00001' })
 ```
 
 When `chaos_write` omits `turn`, it reuses the latest turn in the database — so it lands on the same event as the auto channel.
@@ -225,7 +231,7 @@ Historical record (not re-run): asking "今天好累" surfaced "三月十七那�
 
 ```
 chaos/
-  index.js            plugin entry: Cordis apply(ctx), two automatic channels, 4 tools
+  index.js            plugin entry: Cordis apply(ctx), two automatic channels, 5 tools
   cordis.patch.yml    bundle patch: inserts the chaos row into the profile config tree
   package.json        dsh.bundle.patch points at the file above; dependency versions must match the host
   src/
@@ -260,7 +266,7 @@ Tables: `event` (source of truth, append-only), `claim` (bitemporal view), `asse
 ## Verification
 
 ```bash
-node --test tests/*.test.js                    # 78 unit tests
+node --test tests/*.test.js                    # 83 unit tests
 node scripts/verify-all.js                     # six system checks, no external dependencies
 node scripts/unspoken-bench.js                 # unspoken, rule-based: training / holdout
 DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm   # unspoken, LLM version

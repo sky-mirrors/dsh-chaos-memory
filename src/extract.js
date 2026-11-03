@@ -125,6 +125,18 @@ export function isAnswered(answer) {
 }
 
 /**
+ * 提问且没被答上时的候选。自动通道在 assistant/message 到达时用它——
+ * 用户消息到达那一刻还没有回答，不能先落一条问题。
+ */
+export function unansweredCandidate(userText, aiText = '') {
+  if (!QUESTION_RE.test(userText) || isAnswered(aiText)) return null
+  return {
+    slot: `unanswered.${shortHash(userText)}`,
+    value: userText, quote: userText, kind: 'question',
+  }
+}
+
+/**
  * 一轮问答的完整抽取：单句事实 + 未答问题 + 未说出口。
  * @param {string} userText 用户这一轮说的话
  * @param {string} aiText   对方这一轮的回应（用于判定问题是否被回答）
@@ -132,12 +144,8 @@ export function isAnswered(answer) {
 export function extractTurn(userText, aiText = '') {
   const out = extract(userText)
 
-  if (QUESTION_RE.test(userText) && !isAnswered(aiText)) {
-    out.push({
-      slot: `unanswered.${shortHash(userText)}`,
-      value: userText, quote: userText, kind: 'question',
-    })
-  }
+  const q = unansweredCandidate(userText, aiText)
+  if (q) out.push(q)
 
   out.push(...extractUnspoken(userText))
 
