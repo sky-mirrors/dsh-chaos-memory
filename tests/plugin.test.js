@@ -13,11 +13,25 @@ const mod = await import('../index.js')
 
 function fakeCtx() {
   const registered = []
+  const listeners = new Map()
   return {
-    ctx: { tools: { register: (t) => registered.push(t) } },
+    ctx: {
+      tools: { register: (t) => registered.push(t) },
+      on: (name, fn) => {
+        listeners.set(name, fn)
+      },
+    },
     registered,
+    listeners,
   }
 }
+
+// session/event 的姿态取自 dsh-session / dsh-session-title：seq + data.source.kind + text 块。
+const userEvent = (seq, text, kind = 'user') => ({
+  seq,
+  type: 'user/message',
+  data: { source: { kind }, content: [{ type: 'text', text }] },
+})
 
 test.after(() => {
   process.chdir(origCwd)
@@ -26,7 +40,7 @@ test.after(() => {
 
 test('K1 Cordis 插件导出：name / inject / apply', () => {
   assert.equal(mod.name, 'chaos')
-  assert.deepEqual(mod.inject, ['tools'])
+  assert.deepEqual(mod.inject, ['tools', 'sessions'])
   assert.equal(typeof mod.apply, 'function')
 })
 
@@ -94,4 +108,99 @@ test('K6 status 可用', async () => {
   const r = await registered[2].execute({})
   assert.match(r, /主张 \d+ 条/)
   dispose()
+})
+
+// ---------- 自动写入通道：不依赖模型主动调 chaos_write ----------
+
+test('K7 用户消息到达即自动抽取入库', async () => {
+  const { ctx, registered, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const onEvent = listeners.get('session/event')
+  assert.equal(typeof onEvent, 'function', '必须订阅 session/event')
+
+  onEvent({ id: 's-auto' }, userEvent(101, '我养了一只猫叫团子，它一打雷就往床底下钻'))
+
+  const r = await registered[1].execute({ query: '我那只猫叫什么' })
+  assert.match(r, /团子/)
+  dispose()
+})
+
+test('K8 同一条用户消息重复投递只写一次', async () => {
+  const { ctx, registered, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const onEvent = listeners.get('session/event')
+  const status = registered[2]
+
+  const before = await status.execute({})
+  onEvent({ id: 's-dup' }, userEvent(201, '我生日是三月十七'))
+  onEvent({ id: 's-dup' }, userEvent(201, '我生日是三月十七'))
+  const after = await status.execute({})
+
+  const count = (s) => Number(/主张 (\d+) 条/.exec(s)[1])
+  assert.equal(count(after) - count(before), 1)
+  dispose()
+})
+
+test('K9 非用户来源的消息不触发自动写入', async () => {
+  const { ctx, registered, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const status = registered[2]
+
+  const before = await status.execute({})
+  listeners.get('session/event')({ id: 's-src' }, userEvent(301, '我养了一只猫叫团子', 'assistant'))
+  const after = await status.execute({})
+
+  const count = (s) => Number(/主张 (\d+) 条/.exec(s)[1])
+  assert.equal(count(after), count(before))
+  dispose()
+})
+
+test('K10 没有文本块的消息不写空事件', async () => {
+  const { ctx, registered, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const status = registered[2]
+
+  const before = await status.execute({})
+  listeners.get('session/event')({ id: 's-empty' }, {
+    seq: 401,
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'image', url: 'x' }] },
+  })
+  const after = await status.execute({})
+  assert.equal(after, before)
+  dispose()
+})
+
+// ---------- 自动注入通道：不依赖模型主动调 chaos_recall ----------
+
+const assembleInto = async (listeners, assembly = { contexts: [] }) =>
+  listeners.get('system-prompt/assemble')(assembly, {}, async () => assembly)
+
+test('K11 系统提示装配时自动注入记忆块', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  listeners.get('session/event')({ id: 's-prompt' }, userEvent(501, '我养了一只猫叫团子'))
+
+  const out = await assembleInto(listeners)
+  const entry = out.contexts.find((c) => c.name === 'chaos:memory')
+  assert.ok(entry, '必须注入 chaos 记忆块')
+  assert.match(entry.text, /团子/)
+  assert.equal(entry.interpolate, false)
+  dispose()
+})
+
+test('K12 没有可注入内容时不产生空块', async () => {
+  // 空库要在自己的 cwd 里验：共享目录里的 db 已被前面的用例写过。
+  const empty = mkdtempSync(join(tmpdir(), 'chaos-empty-'))
+  const keep = process.cwd()
+  process.chdir(empty)
+
+  const { ctx, listeners } = fakeCtx()
+  const dispose = mod.apply(ctx)
+  const out = await assembleInto(listeners)
+  dispose()
+
+  process.chdir(keep)
+  rmSync(empty, { recursive: true, force: true })
+  assert.equal(out.contexts.length, 0)
 })

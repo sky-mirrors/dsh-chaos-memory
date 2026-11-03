@@ -8,9 +8,10 @@ import { openDb } from './src/db.js'
 import { appendEvent, applyCorrection, ingestClaim, statusSummary } from './src/store.js'
 import { assemble, render } from './src/potential.js'
 import { negotiable, negotiationLine } from './src/fidelity.js'
+import { extract, extractUnspoken } from './src/extract.js'
 
 export const name = 'chaos'
-export const inject = ['tools']
+export const inject = ['tools', 'sessions']
 
 const text = (s) => [{ type: 'text', text: s }]
 
@@ -22,6 +23,58 @@ export function apply(ctx) {
     if (!db) db = openDb(join(process.cwd(), '.rivet', 'chaos', 'chaos.db'))
     return db
   }
+
+  // 自动写入：宿主每追加一条用户消息就抽取一次，不再依赖模型主动调 chaos_write。
+  // 契约来源：dsh-session 的 session/event（event.seq / data.source.kind / text 块），
+  // 消费方式与 dsh-session-title 一致。
+  // 这里跑规则版：同步、零成本；unspoken 不依赖 AI 回复，user/message 时就已可判定。
+  // （unanswered 需要看下一轮回应，故不在此处派生。）
+  const seen = new Set()
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'user/message' || event.data.source.kind !== 'user') return
+    const text = event.data.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n')
+    if (!text.trim()) return
+    const key = `${session.id}:${event.seq}`
+    if (seen.has(key)) return
+    seen.add(key)
+
+    const t = Math.max(clock, event.seq)
+    clock = t
+    const eid = appendEvent(getDb(), t, 'turn.user', 'user', text)
+    for (const c of [...extract(text), ...extractUnspoken(text)]) {
+      ingestClaim(getDb(), {
+        slot: c.slot,
+        value: c.value,
+        quote: c.quote,
+        evidence: [eid],
+        validFrom: t,
+        kind: c.kind,
+        sourceText: text,
+        confidence: 0.9,
+        sourcePriority: 100,
+      }, t)
+    }
+  })
+
+  // 自动注入：每轮装配系统提示时把该浮现的记忆拼进去，不再依赖模型主动调 chaos_recall。
+  // 契约来源：system-prompt/assemble（assembly.contexts 的 { name, text, interpolate } 条目），
+  // 与 dsh-working-directory 的用法一致。
+  // query 传空 → 走涌现模式（Φ 排序）：未兑现的承诺、没被回答的问题、没说出口的话才会自己浮上来。
+  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    const assembly = await next()
+    const block = render(assemble(getDb(), '', clock, 200))
+    if (block) {
+      assembly.contexts.unshift({
+        name: 'chaos:memory',
+        text: `<chaos>\n${block}\n</chaos>`,
+        interpolate: false,
+      })
+    }
+    return assembly
+  })
 
   ctx.tools.register(defineTool({
     name: 'chaos_write',

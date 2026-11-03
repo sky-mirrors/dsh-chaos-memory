@@ -8,11 +8,12 @@
 
 ```
 对话原文
+  ↓ 触发    session/event（user/message）——自动，不靠模型主动调工具
   ↓ 抽取    规则（基线，零成本） / LLM（deepseek-flash，三道门校验）
   ↓ 写入    闸门 → 引文门 → 值支撑门 → 合并代数 → 双时态
   ↓ 存储    event（真相，只追加） + claim（派生视图）
   ↓ 装配    BM25 + 势能 Φ，按 query 有无明确指向切换两种模式
-  ↓ 注入    <chaos> 块，硬预算 200 字符
+  ↓ 注入    system-prompt/assemble 自动拼入 <chaos> 块，硬预算 200 字符
 ```
 
 ---
@@ -21,8 +22,8 @@
 
 | 项 | 结果 | 依据 |
 |---|---|---|
-| **dsh 插件契约** | **6/6 通过**（`name`/`inject`/`apply` + 4 工具注册 + 端到端） | `tests/plugin.test.js` |
-| 单元测试 | **62 / 62 通过** | `node --test tests/*.test.js` |
+| **dsh 插件契约** | **10/10 通过**（`name`/`inject`/`apply` + 4 工具注册 + 端到端 + 自动写入/注入） | `tests/plugin.test.js` |
+| 单元测试 | **68 / 68 通过** | `node --test tests/*.test.js` |
 | 规模入库 | 240,500 条 / **437 ms** | `scripts/verify-all.js` |
 | 检索延迟 | P50 **0.28 ms** / P95 **0.49 ms** | 200 次 assemble |
 | 注入预算 | 最大 200 字符，超限 **0/10** | budget=200 |
@@ -83,7 +84,7 @@ await chaos_recall({ query: '我那只猫叫什么' })
 await chaos_correct({ id: 'c00001', penalty: 0.25 })
 ```
 
-`chaos_recall` 由模型显式调用。dsh 的工具契约里没有「每轮自动注入」的等价物——记忆要进入上下文，得靠模型主动检索。
+记忆不再靠模型「想起来」：插件在 `session/event` 的每条用户消息上自动抽取写入，在 `system-prompt/assemble` 时自动把该浮现的记忆拼进上下文（query 传空 → 涌现模式）。`chaos_recall` 保留为模型主动检索的入口，但不再是记忆进入上下文的唯一路径。
 
 ### 接 LLM 抽取器（密钥不进插件）
 
@@ -184,7 +185,7 @@ chaos/
     fidelity.js       衰减 / 背离 / 协商话术 / 改口链
     extract.js        规则抽取器（模式表，零成本基线）
     extract-llm.js    LLM 抽取器（三道门校验模型输出；含 unspoken 判断项）
-  tests/              62 个用例，8 个文件
+  tests/              68 个用例，8 个文件
   scripts/
     ingest.js         真实对话灌入 + 统计
     llm-probe.js      真实模型抽取探针（空返回率 / 召回 / 误抽）
@@ -205,7 +206,7 @@ chaos/
 ## 验证
 
 ```bash
-node --test tests/*.test.js          # 62 个单元测试
+node --test tests/*.test.js          # 68 个单元测试
 node scripts/verify-all.js           # 六项系统验证，零外部依赖
 DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 token）
 ```
@@ -214,7 +215,10 @@ DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 toke
 
 ## 未做
 
-- **unspoken 的泛化能力**：规则版在留出集上召回 **0/10**（训练集 12/12，但那是照着正则写的）——它能认出固定句式，换一种说法就失效。语义判断已交给 LLM 抽取器的 `unspoken` 项，规则版只作零成本兜底。基准：`node scripts/unspoken-bench.js`（规则版）/ `DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm`（LLM 版）。**LLM 版在真实模型上的留出集成绩未测**——本地无密钥，目前只验证了管线：理想判断输入下留出集 10/10 不被门禁误杀。
+- **自动通道目前跑规则版**：`session/event` 上同步、零成本、不阻塞会话；LLM 抽取器（`src/extract-llm.js`）尚未接进自动通道——每轮一次模型调用要按会话的模型路由走 `ctx.llm`，并需后台任务 + 超时 + 失败降级，是下一步。所以 unspoken 的语义判断目前仍不生效。
+- **自动通道的真实宿主端到端未测**：`session/event`、`system-prompt/assemble` 的契约取自宿主成品源码（`dsh-session-title`、`dsh-working-directory`），`tests/plugin.test.js` 用假 ctx 验证接线；尚缺一次真实 dsh 会话的观测。
+- **库路径跟 `process.cwd()` 走**：插件在启动目录开库，不是会话目录。宿主已提供 `session.header.cwd`（绝对路径），修法明确但尚未改。
+- **unspoken 的规则版泛化能力**：规则版在留出集上召回 **0/10**（训练集 12/12，但那是照着正则写的）——它能认出固定句式，换一种说法就失效。语义判断已交给 LLM 抽取器的 `unspoken` 项，规则版只作零成本兜底。基准：`node scripts/unspoken-bench.js`（规则版）/ `DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm`（LLM 版）。**LLM 版在真实模型上的留出集成绩未测**——本地无密钥，目前只验证了管线：理想判断输入下留出集 10/10 不被门禁误杀。
 
 ---
 

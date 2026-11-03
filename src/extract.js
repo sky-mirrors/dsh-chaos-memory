@@ -136,12 +136,19 @@ export function extractTurn(userText, aiText = '') {
     })
   }
 
-  if (UNSPOKEN_RE.test(userText)) {
-    out.push({
-      slot: `unspoken.${shortHash(userText)}`,
-      value: userText, quote: userText, kind: 'unspoken',
-    })
-  }
+  out.push(...extractUnspoken(userText))
 
   return out
+}
+
+/**
+ * 未说出口的信号。只看用户这一轮，不依赖 AI 回应——
+ * 自动写入通道在 user/message 到达时用它，那一刻还没有回复。
+ */
+export function extractUnspoken(text) {
+  if (!UNSPOKEN_RE.test(text)) return []
+  return [{
+    slot: `unspoken.${shortHash(text)}`,
+    value: text, quote: text, kind: 'unspoken',
+  }]
 }
