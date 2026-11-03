@@ -69,6 +69,10 @@
 
 ## 快速开始
 
+### 环境要求
+
+**Node.js ≥ 24**。存储层用的是内置 `node:sqlite` 的 `DatabaseSync`：Node 22.5 以下没有这个模块，22.x 需要 `--experimental-sqlite` 启动宿主（插件无法控制宿主的启动参数，故不列为支持范围）。`package.json` 的 `engines` 已声明同一条约束。
+
 ### 装进 dsh
 
 ```bash

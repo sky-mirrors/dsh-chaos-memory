@@ -15,10 +15,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
 
-      # package-lock.json is gitignored in this repo, so `npm ci` is not available.
+      # package-lock.json is committed; npm ci fails loudly if it drifts from
+      # package.json, which is what we want for @deepseek-ai/* release-candidate deps.
       - name: Install
-        run: npm install --no-audit --no-fund
+        run: npm ci
 
       - name: Test
         run: npm test

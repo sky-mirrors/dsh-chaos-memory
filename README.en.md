@@ -68,6 +68,10 @@ Conversation text
 
 ## Quick start
 
+### Requirements
+
+**Node.js ≥ 24.** The storage layer uses the built-in `node:sqlite` `DatabaseSync`: the module does not exist before Node 22.5, and 22.x requires launching the host with `--experimental-sqlite` — a plugin cannot control the host's launch flags, so that is out of scope. The same constraint is declared in `package.json` `engines`.
+
 ### Install into dsh
 
 ```bash
