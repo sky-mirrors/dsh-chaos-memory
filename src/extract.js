@@ -41,6 +41,9 @@ const PATTERNS = [
   { re: /现在([^\s，,。]+?)就睡/, slot: 'user.sleep', kind: 'revision' },
 ]
 
+// LLM 抽取的槽位白名单与规则版同源：两版写进同一个槽位空间，不各维护一份。
+export const SLOTS = [...new Set(PATTERNS.map((p) => p.slot))]
+
 const PROMISE_RE = /说好了|我陪你|我提醒你|我陪你看|陪你一整晚/
 // 未化解的怨：争执句式。unanswered 需要看下一轮是否回应，单句不可判定，故不在此处派生。
 const GRIEVANCE_RE = /算了，?不想说|你是不是根本不在意|每次都这样|你怎么回得这么慢/

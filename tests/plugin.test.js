@@ -11,7 +11,7 @@ process.chdir(dir)
 
 const mod = await import('../index.js')
 
-function fakeCtx() {
+function fakeCtx(llm = undefined) {
   const registered = []
   const listeners = new Map()
   return {
@@ -20,6 +20,8 @@ function fakeCtx() {
       on: (name, fn) => {
         listeners.set(name, fn)
       },
+      llm,
+      logger: { warn: () => {} },
     },
     registered,
     listeners,
@@ -33,6 +35,35 @@ const userEvent = (seq, text, kind = 'user') => ({
   data: { source: { kind }, content: [{ type: 'text', text }] },
 })
 
+// 会话的模型路由来自 session.requestHeader().config（dsh-session-title 就是这么拿的）。
+const sessionWithRoute = (id, route = { provider: 'deepseek', model: 'deepseek-chat' }) => ({
+  id,
+  header: { cwd: dir },
+  requestHeader: () => ({ config: route }),
+})
+
+// 宿主 LLM 的替身：只吐一条完整文本块，形状与 StreamChunk 一致。
+function hostLlm(reply, opts = {}) {
+  const calls = { n: 0 }
+  return {
+    calls,
+    prepareCall: async (config) => {
+      calls.n++
+      return {
+        config,
+        async *stream() {
+          if (opts.fail) throw new Error('host llm down')
+          yield { type: 'text-delta', index: 0, text: reply }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: reply } }
+          yield { type: 'finish', finish: { kind: 'stop' } }
+        },
+      }
+    },
+  }
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 50))
+
 test.after(() => {
   process.chdir(origCwd)
   rmSync(dir, { recursive: true, force: true })
@@ -40,7 +71,7 @@ test.after(() => {
 
 test('K1 Cordis 插件导出：name / inject / apply', () => {
   assert.equal(mod.name, 'chaos')
-  assert.deepEqual(mod.inject, ['tools', 'sessions'])
+  assert.deepEqual(mod.inject, ['tools', 'sessions', 'llm'])
   assert.equal(typeof mod.apply, 'function')
 })
 
@@ -203,4 +234,54 @@ test('K12 没有可注入内容时不产生空块', async () => {
   process.chdir(keep)
   rmSync(empty, { recursive: true, force: true })
   assert.equal(out.contexts.length, 0)
+})
+
+// ---------- LLM 抽取：走宿主的 ctx.llm（宿主的 key），异步不阻塞 ----------
+
+test('K13 自动通道用宿主 LLM 抽取语义项', async () => {
+  const text = '有件事压在心里很久了'
+  const llm = hostLlm(JSON.stringify([{ kind: 'unspoken', quote: text }]))
+  const { ctx, registered, listeners } = fakeCtx(llm)
+  const dispose = mod.apply(ctx)
+
+  listeners.get('session/event')(sessionWithRoute('s-llm'), userEvent(601, text))
+  await settle()
+
+  assert.equal(llm.calls.n, 1, '必须走宿主 LLM 一次')
+  const r = await registered[1].execute({ query: '压在心里' })
+  assert.match(r, /压在心里/)
+  dispose()
+})
+
+test('K14 会话还拿不到模型路由时不调 LLM，规则版照常写入', async () => {
+  const llm = hostLlm('[]')
+  const { ctx, registered, listeners } = fakeCtx(llm)
+  const dispose = mod.apply(ctx)
+
+  listeners.get('session/event')(
+    { id: 's-noroute', requestHeader: () => undefined },
+    userEvent(701, '我养了一只猫叫团子')
+  )
+  await settle()
+
+  assert.equal(llm.calls.n, 0, '没有路由就不该发请求')
+  const r = await registered[1].execute({ query: '我那只猫叫什么' })
+  assert.match(r, /团子/)
+  dispose()
+})
+
+test('K15 宿主 LLM 失败不影响规则版结果，也不抛到会话', async () => {
+  const llm = hostLlm('', { fail: true })
+  const { ctx, registered, listeners } = fakeCtx(llm)
+  const dispose = mod.apply(ctx)
+
+  assert.doesNotThrow(() => {
+    listeners.get('session/event')(sessionWithRoute('s-fail'), userEvent(801, '我养了一只猫叫团子'))
+  })
+  await settle()
+
+  assert.equal(llm.calls.n, 1)
+  const r = await registered[1].execute({ query: '我那只猫叫什么' })
+  assert.match(r, /团子/)
+  dispose()
 })

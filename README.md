@@ -23,7 +23,7 @@
 | 项 | 结果 | 依据 |
 |---|---|---|
 | **dsh 插件契约** | **10/10 通过**（`name`/`inject`/`apply` + 4 工具注册 + 端到端 + 自动写入/注入） | `tests/plugin.test.js` |
-| 单元测试 | **68 / 68 通过** | `node --test tests/*.test.js` |
+| 单元测试 | **71 / 71 通过** | `node --test tests/*.test.js` |
 | 规模入库 | 240,500 条 / **437 ms** | `scripts/verify-all.js` |
 | 检索延迟 | P50 **0.28 ms** / P95 **0.49 ms** | 200 次 assemble |
 | 注入预算 | 最大 200 字符，超限 **0/10** | budget=200 |
@@ -185,7 +185,7 @@ chaos/
     fidelity.js       衰减 / 背离 / 协商话术 / 改口链
     extract.js        规则抽取器（模式表，零成本基线）
     extract-llm.js    LLM 抽取器（三道门校验模型输出；含 unspoken 判断项）
-  tests/              68 个用例，8 个文件
+  tests/              71 个用例，8 个文件
   scripts/
     ingest.js         真实对话灌入 + 统计
     llm-probe.js      真实模型抽取探针（空返回率 / 召回 / 误抽）
@@ -206,7 +206,7 @@ chaos/
 ## 验证
 
 ```bash
-node --test tests/*.test.js          # 68 个单元测试
+node --test tests/*.test.js          # 71 个单元测试
 node scripts/verify-all.js           # 六项系统验证，零外部依赖
 DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 token）
 ```
@@ -215,7 +215,7 @@ DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 toke
 
 ## 未做
 
-- **自动通道目前跑规则版**：`session/event` 上同步、零成本、不阻塞会话；LLM 抽取器（`src/extract-llm.js`）尚未接进自动通道——每轮一次模型调用要按会话的模型路由走 `ctx.llm`，并需后台任务 + 超时 + 失败降级，是下一步。所以 unspoken 的语义判断目前仍不生效。
+- **自动通道已接宿主 LLM**：`session/event` 上规则版同步先写（兜底），随后异步调 `ctx.llm`（宿主的 key，插件自己不读环境变量、不存密钥）补齐语义项。路由取自 `session.requestHeader().config`；会话首次请求前没有路由，那一轮只用规则版。失败只降级到规则版结果，不影响会话。代价是每轮一次模型调用 + `inject` 多了 `llm`（无 LLM 服务的 profile 不会加载本插件）。**真实宿主下的模型调用未实测**——单测用假 `ctx.llm` 验证接线，本机没有可用的宿主凭据。
 - **自动通道的真实宿主端到端未测**：`session/event`、`system-prompt/assemble` 的契约取自宿主成品源码（`dsh-session-title`、`dsh-working-directory`），`tests/plugin.test.js` 用假 ctx 验证接线；尚缺一次真实 dsh 会话的观测。
 - **库路径跟 `process.cwd()` 走**：插件在启动目录开库，不是会话目录。宿主已提供 `session.header.cwd`（绝对路径），修法明确但尚未改。
 - **unspoken 的规则版泛化能力**：规则版在留出集上召回 **0/10**（训练集 12/12，但那是照着正则写的）——它能认出固定句式，换一种说法就失效。语义判断已交给 LLM 抽取器的 `unspoken` 项，规则版只作零成本兜底。基准：`node scripts/unspoken-bench.js`（规则版）/ `DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm`（LLM 版）。**LLM 版在真实模型上的留出集成绩未测**——本地无密钥，目前只验证了管线：理想判断输入下留出集 10/10 不被门禁误杀。

@@ -3,15 +3,17 @@
 import { join } from 'node:path'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { openDb } from './src/db.js'
 import { appendEvent, applyCorrection, ingestClaim, statusSummary } from './src/store.js'
 import { assemble, render } from './src/potential.js'
 import { negotiable, negotiationLine } from './src/fidelity.js'
-import { extract, extractUnspoken } from './src/extract.js'
+import { SLOTS, extract, extractUnspoken } from './src/extract.js'
+import { buildPrompt, parseCandidates } from './src/extract-llm.js'
 
 export const name = 'chaos'
-export const inject = ['tools', 'sessions']
+export const inject = ['tools', 'sessions', 'llm']
 
 const text = (s) => [{ type: 'text', text: s }]
 
@@ -24,10 +26,55 @@ export function apply(ctx) {
     return db
   }
 
+  // LLM 抽取：用宿主的 ctx.llm（宿主的 key），异步跑、不阻塞会话。
+  // 路由取自 session.requestHeader().config——与 dsh-session-title 同一取法；
+  // 会话第一次请求前还没有路由，那一轮就只用规则版。
+  // 失败只降级到规则版结果：模型是外部输入，不可用不能让这一轮的记忆丢失。
+  const extractWithHost = async (session, text, eid, t) => {
+    const route = session.requestHeader()?.config
+    if (!route) return
+    const signal = AbortSignal.timeout(20000)
+    const call = await ctx.llm.prepareCall(route, signal)
+    const assembler = new BlockAssembler()
+    const messages = [createUserMessage({
+      content: [{ type: 'text', text: buildPrompt(text, SLOTS) }],
+      source: { kind: 'user' },
+    })]
+    for await (const chunk of call.stream({
+      ...call.config,
+      messages,
+      sessionId: session.id,
+      purpose: 'chaos-extract',
+      temperature: 0,
+      maxTokens: 800,
+      signal,
+    })) {
+      assembler.push(chunk)
+    }
+    const raw = assembler
+      .blocks()
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+    for (const c of parseCandidates(raw, text, SLOTS)) {
+      ingestClaim(getDb(), {
+        slot: c.slot,
+        value: c.value,
+        quote: c.quote,
+        evidence: [eid],
+        validFrom: t,
+        kind: c.kind,
+        sourceText: text,
+        confidence: 0.85,
+        sourcePriority: 90,
+      }, t)
+    }
+  }
+
   // 自动写入：宿主每追加一条用户消息就抽取一次，不再依赖模型主动调 chaos_write。
   // 契约来源：dsh-session 的 session/event（event.seq / data.source.kind / text 块），
   // 消费方式与 dsh-session-title 一致。
-  // 这里跑规则版：同步、零成本；unspoken 不依赖 AI 回复，user/message 时就已可判定。
+  // 规则版先写（同步、零成本，兜底）；LLM 抽取在后台补齐语义项。
   // （unanswered 需要看下一轮回应，故不在此处派生。）
   const seen = new Set()
   ctx.on('session/event', (session, event) => {
@@ -57,6 +104,9 @@ export function apply(ctx) {
         sourcePriority: 100,
       }, t)
     }
+    void extractWithHost(session, text, eid, t).catch((err) => {
+      ctx.logger.warn(`chaos: LLM 抽取失败，保留规则版结果: ${String(err)}`)
+    })
   })
 
   // 自动注入：每轮装配系统提示时把该浮现的记忆拼进去，不再依赖模型主动调 chaos_recall。
