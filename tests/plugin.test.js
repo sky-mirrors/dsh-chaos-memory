@@ -255,25 +255,31 @@ test('K12 没有可注入内容时不产生空块', async () => {
   assert.equal(out.contexts.length, 0)
 })
 
-test('K19 单会话注入预算到顶后不再堆记忆，改给缺口提示', async () => {
+test('K19 预算窗口内到顶后暂停注入，窗口到期恢复（不永久失忆）', async () => {
   const own = mkdtempSync(join(tmpdir(), 'chaos-budget-'))
-  const { ctx, listeners } = fakeCtx()
+  const { ctx, listeners, registered, execOf } = fakeCtx()
   const dispose = mod.apply(ctx)
   const session = sessionNoRoute('s-budget', own)
-  const onEvent = listeners.get('session/event')
 
-  onEvent(session, userEvent(1, '我养了一只猫叫团子'))
-  onEvent(session, userEvent(2, '我生日是三月十七'))
-  onEvent(session, userEvent(3, '我是画画的'))
-  onEvent(session, userEvent(4, '我最怕的是黑'))
-  onEvent(session, userEvent(5, '我在杭州住了三年'))
+  // 写满预算：7 条/轮的注入量下，600 字符在几轮内就会用掉。
+  for (let i = 0; i < 12; i++) {
+    const text = `测试记忆第${i}号的原文内容`
+    await registered[0].execute(
+      { slot: `test.mem.${i}`, value: text, quote: text, source_text: text },
+      execOf('s-budget', own)
+    )
+  }
 
-  let last
-  for (let i = 0; i < 30; i++) last = await assembleInto(listeners, session)
+  const names = []
+  for (let i = 0; i < 30; i++) {
+    const out = await assembleInto(listeners, session)
+    names.push(out.contexts[0]?.name ?? 'none')
+  }
 
-  const gap = last.contexts.find((c) => c.name === 'chaos:gap')
-  assert.ok(gap, '预算到顶后应给出缺口提示')
-  assert.match(gap.text, /chaos_recall/)
+  assert.ok(names.includes('chaos:memory'), '必须至少注入过一次')
+  const firstGap = names.indexOf('chaos:gap')
+  assert.ok(firstGap >= 0, '预算到顶后应给出缺口提示')
+  assert.ok(names.slice(firstGap + 1).includes('chaos:memory'), '窗口到期后必须恢复注入')
 
   dispose()
   rmSync(own, { recursive: true, force: true })
@@ -404,4 +410,31 @@ test('K18 turn 时间轴按库分开：别的会话的高 seq 不污染这边', 
   dispose()
   rmSync(a, { recursive: true, force: true })
   rmSync(b, { recursive: true, force: true })
+})
+
+test('K20 进程重启后 turn 时钟从库内最新轮次续上，改口不被判成更旧', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-restart-'))
+
+  // 第一个进程：第 100 轮说住在杭州
+  const first = fakeCtx()
+  const dispose1 = mod.apply(first.ctx)
+  first.listeners.get('session/event')(sessionNoRoute('s-old', own), userEvent(100, '我在杭州住了三年'))
+  dispose1()
+
+  // 第二个进程：同一个 cwd / 同一个库，新会话 seq 从 1 起
+  const second = fakeCtx()
+  const dispose2 = mod.apply(second.ctx)
+  second.listeners.get('session/event')(sessionNoRoute('s-new', own), userEvent(1, '下个月我要搬去成都了'))
+  const recalled = await second.registered[1].execute({ query: '我现在住哪' }, second.execOf('s-new', own))
+  dispose2()
+
+  const db = openDb(join(own, '.rivet', 'chaos', 'chaos.db'))
+  const rows = db.prepare("SELECT value, state, tx_to FROM claim WHERE slot='user.city' ORDER BY valid_from, id").all()
+  db.close()
+  rmSync(own, { recursive: true, force: true })
+
+  assert.match(recalled, /成都/)
+  const active = rows.filter((r) => r.tx_to == null && r.state === 'active')
+  assert.equal(active.length, 1, '同一槽位只能有一条活动主张')
+  assert.equal(active[0].value, '成都', '重启后的新说法必须压过旧值')
 })

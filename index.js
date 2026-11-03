@@ -17,7 +17,7 @@ import { assemble, render } from './src/potential.js'
 import { negotiable, negotiationLine } from './src/fidelity.js'
 import { SLOTS, extract, extractUnspoken } from './src/extract.js'
 import { buildPrompt, parseCandidates } from './src/extract-llm.js'
-import { SESSION_BUDGET } from './src/constants.js'
+import { SESSION_BUDGET, SESSION_WINDOW } from './src/constants.js'
 
 export const name = 'chaos'
 export const inject = ['tools', 'sessions', 'llm']
@@ -42,7 +42,17 @@ export function apply(ctx) {
     }
     return db
   }
-  const clockOf = (session) => clocks.get(dbPathOf(session)) ?? 0
+  // 进程重启时内存里的 clock 归零，但库里的 turn 还在。首次访问从 latestTurn 续上——
+  // 否则新会话的 seq=1 会被当成「比库里的历史更早」，改口会被判成 deferred。
+  const clockOf = (session) => {
+    const path = dbPathOf(session)
+    let t = clocks.get(path)
+    if (t === undefined) {
+      t = latestTurn(getDb(session))
+      clocks.set(path, t)
+    }
+    return t
+  }
   const bumpClock = (session, t) => {
     const path = dbPathOf(session)
     if (t > (clocks.get(path) ?? 0)) clocks.set(path, t)
@@ -110,7 +120,8 @@ export function apply(ctx) {
     if (seen.has(key)) return
     seen.add(key)
 
-    const t = Math.max(clockOf(session), event.seq)
+    // 严格递增：同一进程里的新会话 seq 会从 1 重来，只取 max 会把两轮写成同一个 turn。
+    const t = Math.max(clockOf(session) + 1, event.seq)
     bumpClock(session, t)
     const db = getDb(session)
     const eid = ensureEvent(db, t, 'turn.user', 'user', text)
@@ -138,14 +149,22 @@ export function apply(ctx) {
   // query 传空 → 走涌现模式（Φ 排序）：未兑现的承诺、没被回答的问题、没说出口的话才会自己浮上来。
   //
   // 会话预算：注入是按会话累计的。每个会话有自己的预算和「已注入」表——
-  // 已注入过的条目降权（让位置给新的），累计到 SESSION_BUDGET 后只给缺口提示，
-  // 不再每轮重复往上下文里塞同一批记忆。
+  // 已注入过的条目降权（让位置给新的），窗口内累计到 SESSION_BUDGET 后暂停注入，
+  // 窗口到期重新计数，长会话不会永久失忆。
   const budgets = new Map()
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
     const session = context.agent?.session
     const key = session?.id ?? '__no-session__'
-    const st = budgets.get(key) ?? { spent: 0, seen: new Map() }
+    const st = budgets.get(key) ?? { spent: 0, turn: 0, seen: new Map() }
+
+    // 预算按窗口滚动：窗口到期重新计数，只在窗口内封顶。
+    st.turn += 1
+    if (st.turn > SESSION_WINDOW) {
+      st.turn = 1
+      st.spent = 0
+    }
+    budgets.set(key, st)
 
     if (st.spent >= SESSION_BUDGET) {
       assembly.contexts.unshift({
@@ -166,7 +185,6 @@ export function apply(ctx) {
       })
       st.spent += block.length
       for (const it of items) st.seen.set(it.id, (st.seen.get(it.id) ?? 0) + 1)
-      budgets.set(key, st)
     }
     return assembly
   })

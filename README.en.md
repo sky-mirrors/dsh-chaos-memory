@@ -32,8 +32,8 @@ Conversation text
 
 | Item | Result | Evidence |
 |---|---|---|
-| Unit tests | **77 / 77 passing** | `node --test tests/*.test.js` |
-| Plugin contract | **19 / 19 passing** (`name`/`inject`/`apply` + 4 tools + end-to-end + auto write/inject + host LLM wiring + db path + event dedupe + per-db turn + session budget) | `tests/plugin.test.js` K1–K19 |
+| Unit tests | **78 / 78 passing** | `node --test tests/*.test.js` |
+| Plugin contract | **20 / 20 passing** (`name`/`inject`/`apply` + 4 tools + end-to-end + auto write/inject + host LLM wiring + db path + event dedupe + per-db turn + restart clock + session budget) | `tests/plugin.test.js` K1–K20 |
 | Database path | one database per session `header.cwd`; different cwds are isolated | K16 |
 | Event dedupe | auto channel + `chaos_write` on the same sentence → one event, `duplicate` | K17 |
 | Per-db turn | session A's seq=100 does not shift session B's `valid_from` | K18 |
@@ -41,7 +41,8 @@ Conversation text
 | Tools visible in the UI | **verified** (called `chaos_status` in a real session) | user confirmation |
 | Concurrent writes | 4 processes × 100 rows into one db → **400/400 stored, all ids unique** | multi-process probe (one-off, removed) |
 | Ids never reused | still writable after a row was deleted | `tests/store.test.js` C8 |
-| Session budget | one session's cumulative injection stops at the cap and falls back to a gap hint; injected entries yield | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
+| Session budget | injection pauses with a gap hint once the window's cap is spent; **resumes when the 8-turn window rolls over**; injected entries yield | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
+| Restart clock | after a process restart the turn clock resumes from the db's latest turn; a seq=1 revision in a new session still outranks the old value | `tests/plugin.test.js` K20 |
 | unspoken (rule-based) | training set 12/12, **holdout 0/10** | `scripts/unspoken-bench.js` |
 
 ### Historical (not re-run in this session)
@@ -57,6 +58,8 @@ Conversation text
 | Rule extraction | 18/18 facts | `scripts/ingest.js` |
 | LLM extraction (real calls) | 18 calls, 0 failures, 100% format compliance | `scripts/e2e.js` (needs `DEEPSEEK_API_KEY`) |
 | End-to-end recall | 8/8 (7 at rank 1) | `scripts/e2e.js` |
+
+Note: `scripts/verify-all.js` could not run after `c44dc8c` (nested transaction in `ingestClaim`); it is fixed now. Re-run on 2026-11-03: ingest 1,042 ms, retrieval P50 0.33 ms / P95 0.74 ms, injection max 200 chars / 0 over budget, states `{"active":24,"deferred":3}`.
 
 ### Not verified
 
@@ -257,7 +260,7 @@ Tables: `event` (source of truth, append-only), `claim` (bitemporal view), `asse
 ## Verification
 
 ```bash
-node --test tests/*.test.js                    # 77 unit tests
+node --test tests/*.test.js                    # 78 unit tests
 node scripts/verify-all.js                     # six system checks, no external dependencies
 node scripts/unspoken-bench.js                 # unspoken, rule-based: training / holdout
 DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm   # unspoken, LLM version

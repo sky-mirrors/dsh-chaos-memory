@@ -32,8 +32,8 @@
 
 | 项 | 结果 | 依据 |
 |---|---|---|
-| 单元测试 | **77 / 77 通过** | `node --test tests/*.test.js` |
-| 插件契约 | **19 / 19 通过**（`name`/`inject`/`apply` + 4 工具 + 端到端 + 自动写入/注入 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 会话预算） | `tests/plugin.test.js` K1–K19 |
+| 单元测试 | **78 / 78 通过** | `node --test tests/*.test.js` |
+| 插件契约 | **20 / 20 通过**（`name`/`inject`/`apply` + 4 工具 + 端到端 + 自动写入/注入 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 重启续钟 + 会话预算） | `tests/plugin.test.js` K1–K20 |
 | 库路径 | 按会话 `header.cwd` 分库，不同 cwd 互不可见 | K16 |
 | event 去重 | 自动通道与 `chaos_write` 记同一句 → 一条 event、`duplicate` | K17 |
 | turn 分库 | A 会话 seq=100 不影响 B 会话的 `valid_from` | K18 |
@@ -41,7 +41,8 @@
 | 工具在 UI 里可见 | **已验证**（真实会话里调用过 `chaos_status`） | 用户确认 |
 | 并发写保护 | 4 进程 × 100 条同库并发写 → **400/400 落库、ID 全唯一** | 多进程探针（一次性，已删） |
 | ID 不复用 | 删过行后仍能写入，不撞主键 | `tests/store.test.js` C8 |
-| 会话预算帽 | 单会话累计到顶后只发缺口提示；已注入条目降权让位 | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
+| 会话预算帽 | 窗口内累计到顶后暂停注入、改发缺口提示；**8 轮窗口到期后恢复**，已注入条目降权让位 | `tests/plugin.test.js` K19 / `potential.test.js` P8 |
+| 重启续钟 | 进程重启后 turn 从库内最新轮次续上；新会话 seq=1 的改口仍压过旧值 | `tests/plugin.test.js` K20 |
 | unspoken 规则版 | 训练集 12/12，**留出集 0/10** | `scripts/unspoken-bench.js` |
 
 ### 历史记录（本次未复测）
@@ -58,6 +59,8 @@
 | LLM 抽取（真实调用） | 18 次 0 失败，格式遵守 100% | `scripts/e2e.js`（需 `DEEPSEEK_API_KEY`） |
 | 端到端召回 | 8/8（7 个第 1 位） | `scripts/e2e.js` |
 | 宿主真实加载 | 模块已激活（修掉依赖版本错配后无 `did not activate`） | `dsh-start3.log` |
+
+注：`scripts/verify-all.js` 曾因 `ingestClaim` 的事务嵌套在 `c44dc8c` 后无法运行，本次已修复；2026-11-03 重跑结果：入库 1,042 ms、检索 P50 0.33 ms / P95 0.74 ms、注入预算 200 字符 / 0 超限、状态分布 `{"active":24,"deferred":3}`。
 
 ### 未验证
 
@@ -256,7 +259,7 @@ chaos/
 ## 验证
 
 ```bash
-node --test tests/*.test.js                    # 77 个单元测试
+node --test tests/*.test.js                    # 78 个单元测试
 node scripts/verify-all.js                     # 六项系统验证，零外部依赖
 node scripts/unspoken-bench.js                 # unspoken 规则版：训练集 / 留出集
 DEEPSEEK_API_KEY=... node scripts/unspoken-bench.js --llm   # unspoken LLM 版

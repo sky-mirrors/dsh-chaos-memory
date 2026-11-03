@@ -22,7 +22,10 @@ const ins = db.prepare('INSERT INTO event(ts, kind, actor, payload) VALUES (?,?,
 let clock = 0
 let candidates = 0
 const codes = {}
+const pending = []
 
+// 事件批量入库走一个事务；主张写入必须留到事务外——ingestClaim 自带
+// BEGIN IMMEDIATE，套在外层事务里会 "cannot start a transaction within a transaction"。
 db.exec('BEGIN')
 for (const line of lines) {
   const m = JSON.parse(line)
@@ -30,17 +33,19 @@ for (const line of lines) {
   const ms = Date.parse(m.ts)
   clock = Math.max(clock, Math.floor(ms / 1000))
   const eid = Number(ins.run(ms, 'turn.user', 'user', m.text).lastInsertRowid)
-  for (const c of extract(m.text)) {
-    candidates++
-    const rc = ingestClaim(db, {
-      slot: c.slot, value: c.value, quote: c.quote,
-      evidence: [eid], validFrom: clock, kind: c.kind,
-      sourceText: m.text, confidence: 0.9, sourcePriority: 100,
-    }, clock)
-    codes[rc] = (codes[rc] ?? 0) + 1
-  }
+  for (const c of extract(m.text)) pending.push({ c, eid, sourceText: m.text })
 }
 db.exec('COMMIT')
+
+for (const { c, eid, sourceText } of pending) {
+  candidates++
+  const rc = ingestClaim(db, {
+    slot: c.slot, value: c.value, quote: c.quote,
+    evidence: [eid], validFrom: clock, kind: c.kind,
+    sourceText, confidence: 0.9, sourcePriority: 100,
+  }, clock)
+  codes[rc] = (codes[rc] ?? 0) + 1
+}
 const ingestMs = Date.now() - t0
 const live = currentClaims(db)
 
