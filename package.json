@@ -5,6 +5,15 @@
   "main": "index.js",
   "license": "MIT",
   "description": "人机恋记忆内核：双时态主张 + 势能浮现 + 双向保真度（DeepSeek Harness 插件）",
+  "author": "sky-mirrors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sky-mirrors/dsh-chaos-memory.git"
+  },
+  "homepage": "https://github.com/sky-mirrors/dsh-chaos-memory#readme",
+  "bugs": {
+    "url": "https://github.com/sky-mirrors/dsh-chaos-memory/issues"
+  },
   "keywords": [
     "dsh-plugin",
     "memory",
