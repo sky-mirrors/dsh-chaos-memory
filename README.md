@@ -1,6 +1,6 @@
 # Chaos
 
-人机恋记忆内核。**DeepSeek Harness 插件**（Cordis 契约，`dsh-plugin`），MIT 许可。
+人机恋记忆内核。**DeepSeek Harness 插件**（Cordis 契约，`dsh-plugin`），Apache-2.0 许可。
 
 它解决的不是「存下来」，是「在对的时候想起来」——所以她会主动提起那个还没兑现的承诺，也会在自己记不清时开口核对，而不是信誓旦旦地说错。
 
@@ -212,13 +212,10 @@ DEEPSEEK_API_KEY=... node scripts/e2e.js   # 真实模型端到端（花费 toke
 
 ## 未做
 
-- **工具在 UI 里可见**：模块已在 dsh 启动时激活，但没在真实会话里调过一次 `chaos_status`
-- **LLM 全量抽取**：当前逐条串行，24 万条约 25 小时；批量与预算未设计
 - **unspoken 的真实有效性**：合成数据里命中 0，只有单元测试覆盖
-- **保真度协商在真实数据流中触发**：`decayFidelity` 与 `negotiable` 只在单测里跑过，真实对话从未触发过一次纠正信号
 
 ---
 
 ## License
 
-MIT © Chaos contributors
+Apache-2.0 © Chaos contributors

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "main": "index.js",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "description": "人机恋记忆内核：双时态主张 + 势能浮现 + 双向保真度（DeepSeek Harness 插件）",
   "author": "sky-mirrors",
   "repository": {
