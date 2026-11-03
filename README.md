@@ -1,6 +1,10 @@
 # Chaos
 
+[![CI](https://github.com/sky-mirrors/dsh-chaos-memory/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/sky-mirrors/dsh-chaos-memory/actions/workflows/ci.yml)
+
 人机恋记忆内核。**DeepSeek Harness 插件**（Cordis 契约，`dsh-plugin`），Apache-2.0 许可。
+
+[English](README.en.md)
 
 它解决的不是「存下来」，是「在对的时候想起来」——所以她会主动提起那个还没兑现的承诺，也会在自己记不清时开口核对，而不是信誓旦旦地说错。
 
@@ -34,6 +38,7 @@
 | event 去重 | 自动通道与 `chaos_write` 记同一句 → 一条 event、`duplicate` | K17 |
 | turn 分库 | A 会话 seq=100 不影响 B 会话的 `valid_from` | K18 |
 | 宿主装配 | `chaos` 与 `llm`、`dsh-session` 同在 web profile 配置树 | `dsh --profile web --dump-config` |
+| 工具在 UI 里可见 | **已验证**（真实会话里调用过 `chaos_status`） | 用户确认 |
 | unspoken 规则版 | 训练集 12/12，**留出集 0/10** | `scripts/unspoken-bench.js` |
 
 ### 历史记录（本次未复测）
@@ -58,7 +63,6 @@
 | 真实 dsh 会话的事件流 | 需要一次真实会话观测 `session/event`、`system-prompt/assemble` 是否按契约触发；本机无凭据 |
 | 真实宿主下的 LLM 抽取 | 单测用假 `ctx.llm` 验证接线；`dsh headless` 在本机止于 `MISSING_CREDENTIAL` |
 | LLM 版 unspoken 留出集成绩 | 需 `DEEPSEEK_API_KEY`；本地只验证了管线（理想判断输入下 10/10 不被门禁误杀） |
-| 工具在 UI 里可见 | 需在真实会话调用一次 `chaos_status` |
 | LLM 全量成本 | 18 次 114 秒，线性外推 24 万条约 25 小时 |
 
 ---
@@ -68,8 +72,9 @@
 ### 装进 dsh
 
 ```bash
-# 1) 从 npm 装进目标 profile（web / desktop 按需替换）
-dsh plugin --profile web add dsh-chaos-memory
+# 1) 从 git 源装进目标 profile（web / desktop 按需替换）
+#    npm 上尚未发布，装的是仓库源码
+dsh plugin --profile web add git+https://github.com/sky-mirrors/dsh-chaos-memory.git
 
 # 2) 手动把包名加进 bundles
 #    dsh plugin add 只写 dependencies，不写 dsh.profile.bundles；少了这步装了也不加载
