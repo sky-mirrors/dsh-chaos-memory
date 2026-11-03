@@ -32,8 +32,8 @@
 
 | 项 | 结果 | 依据 |
 |---|---|---|
-| 单元测试 | **83 / 83 通过** | `node --test tests/*.test.js` |
-| 插件契约 | **23 / 23 通过**（`name`/`inject`/`apply` + 5 工具 + 端到端 + 自动写入/注入 + 未答问题 + 作废 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 重启续钟 + 会话预算） | `tests/plugin.test.js` K1–K23 |
+| 单元测试 | **85 / 85 通过** | `node --test tests/*.test.js` |
+| 插件契约 | **25 / 25 通过**（`name`/`inject`/`apply` + 5 工具 + 端到端 + 自动写入/注入 + 未答问题 + 作废 + 抽取触发 + 宿主 LLM 接线 + 库路径 + event 去重 + turn 分库 + 重启续钟 + 会话预算） | `tests/plugin.test.js` K1–K25 |
 | 库路径 | 按会话 `header.cwd` 分库，不同 cwd 互不可见 | K16 |
 | event 去重 | 自动通道与 `chaos_write` 记同一句 → 一条 event、`duplicate` | K17 |
 | turn 分库 | A 会话 seq=100 不影响 B 会话的 `valid_from` | K18 |
@@ -48,6 +48,7 @@
 | 装配日志 | 每次注入写 `assembly_log`（claim_id / score / reason / packet_hash） | `tests/potential.test.js` P9 |
 | 真实宿主事件流 | headless 0.2.1-rc.5：`user/message` → 写库（1 event + `user.pet.name=团子`） | 「真实宿主」一节 |
 | 真实宿主注入 | 第 2 轮起请求体出现 `<chaos>` 块并写 `assembly_log`；**第 1 轮不注入**（装配早于用户消息） | 同上 |
+| 真实宿主 LLM 抽取 | 第 1/2 轮各发出一次 `chaos-extract` 请求；`user.tea=乌龙`（priority 90）落库 | 同上 |
 | 宿主加载 | profile 依赖键必须是包名 `dsh-chaos-memory`；本地目录安装的默认键是目录名，会 `Cannot find package` 不激活 | 同上 |
 | unspoken 规则版 | 训练集 12/12，**留出集 0/10** | `scripts/unspoken-bench.js` |
 
@@ -75,13 +76,12 @@
 - **加载**：profile 依赖键必须是包名 `dsh-chaos-memory`。用本地目录安装时依赖键会变成目录名（`chaos`），而 `cordis.patch.yml` 按包名插入 → `Cannot find package 'dsh-chaos-memory'`，插件不激活。本机 web/desktop profile 已按别名修正。
 - **写入**：一轮真实会话后库内出现 1 条 event + `user.pet.name=团子`，evidence 指向该 event。
 - **注入**：第 1 轮的系统提示装配发生在用户消息之前（库为空 → 不注入）；第 2 轮起假模型收到的请求体里有 `<chaos>\n【你记得的关于对方的事】\n- 团子\n</chaos>`，`assembly_log` 同步落行（turn_id / claim_id / emergence / packet_hash）。
-- **未触发**：三轮里假模型没有收到任何 `chaos-extract` 请求——`extractWithHost` 在 `user/message` 时刻拿不到路由而返回，真实宿主目前只跑规则版。
+- **LLM 抽取**：`request/header` 之后补跑成功——两轮各发出一次 `chaos-extract` 请求，`user.tea=乌龙` 以 priority 90 落库。过程中修掉两个真实缺陷：① 路由在 `user/message` 时刻还不存在，改为 `request/header` 到达后补跑；② `PreparedLlmCall` 会逐字段比对 config，原先把 `temperature/maxTokens` 塞进 `stream()` 会被拒，改为在 `prepareCall` 时给定。
 
 ### 未验证
 
 | 项 | 缺什么 |
 |---|---|
-| 真实宿主下的 LLM 抽取 | 假模型回放三轮均未收到任何抽取请求：`user/message` 时刻 `requestHeader()` 拿不到路由（或 `prepareCall` 未发出请求），真实宿主目前只跑规则版 |
 | LLM 版 unspoken 留出集成绩 | 需 `DEEPSEEK_API_KEY`；本地只验证了管线（理想判断输入下 10/10 不被门禁误杀） |
 | LLM 全量成本 | 18 次 114 秒，线性外推 24 万条约 25 小时 |
 

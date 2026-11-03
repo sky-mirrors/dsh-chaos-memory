@@ -516,3 +516,58 @@ test('K23 chaos_retract 作废记忆：不再被检索，状态记为 retracted'
   dispose()
   rmSync(own, { recursive: true, force: true })
 })
+
+// ---------- 抽取触发点：路由在 request/header 才出现 ----------
+
+const requestHeaderEvent = (seq, route) => ({
+  seq,
+  type: 'request/header',
+  data: { header: { config: route }, reason: 'initial' },
+})
+
+test('K24 用户消息时没有路由，request/header 之后补跑 LLM 抽取', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-late-route-'))
+  const llm = hostLlm(JSON.stringify([
+    { slot: 'user.tea', value: '乌龙', quote: '我最近改喝乌龙了' },
+  ]))
+  const { ctx, registered, listeners, execOf } = fakeCtx(llm)
+  const dispose = mod.apply(ctx)
+  const session = sessionNoRoute('s-late', own)
+  const onEvent = listeners.get('session/event')
+
+  onEvent(session, userEvent(1, '我最近改喝乌龙了'))
+  await settle()
+  assert.equal(llm.calls.n, 0, '没有路由时不能先发抽取请求')
+
+  onEvent(session, requestHeaderEvent(2, { provider: 'deepseek', model: 'deepseek-chat' }))
+  await settle()
+  assert.equal(llm.calls.n, 1, 'request/header 到达后必须补跑一次抽取')
+
+  const recall = await registered[1].execute({ query: '我喝什么茶' }, execOf('s-late', own))
+  assert.match(recall, /乌龙/)
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
+})
+
+test('K25 用户消息时已有路由：立即抽取，request/header 不重复触发', async () => {
+  const own = mkdtempSync(join(tmpdir(), 'chaos-early-route-'))
+  const llm = hostLlm(JSON.stringify([
+    { slot: 'user.tea', value: '乌龙', quote: '我最近改喝乌龙了' },
+  ]))
+  const { ctx, listeners } = fakeCtx(llm)
+  const dispose = mod.apply(ctx)
+  const session = sessionWithRoute('s-early', undefined, own)
+  const onEvent = listeners.get('session/event')
+
+  onEvent(session, userEvent(1, '我最近改喝乌龙了'))
+  await settle()
+  assert.equal(llm.calls.n, 1)
+
+  onEvent(session, requestHeaderEvent(2, { provider: 'deepseek', model: 'deepseek-chat' }))
+  await settle()
+  assert.equal(llm.calls.n, 1, '已经抽过的不该在 request/header 再抽一次')
+
+  dispose()
+  rmSync(own, { recursive: true, force: true })
+})

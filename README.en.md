@@ -32,8 +32,8 @@ Conversation text
 
 | Item | Result | Evidence |
 |---|---|---|
-| Unit tests | **83 / 83 passing** | `node --test tests/*.test.js` |
-| Plugin contract | **23 / 23 passing** (`name`/`inject`/`apply` + 5 tools + end-to-end + auto write/inject + unanswered questions + retract + host LLM wiring + db path + event dedupe + per-db turn + restart clock + session budget) | `tests/plugin.test.js` K1–K23 |
+| Unit tests | **85 / 85 passing** | `node --test tests/*.test.js` |
+| Plugin contract | **25 / 25 passing** (`name`/`inject`/`apply` + 5 tools + end-to-end + auto write/inject + unanswered questions + retract + extraction trigger + host LLM wiring + db path + event dedupe + per-db turn + restart clock + session budget) | `tests/plugin.test.js` K1–K25 |
 | Database path | one database per session `header.cwd`; different cwds are isolated | K16 |
 | Event dedupe | auto channel + `chaos_write` on the same sentence → one event, `duplicate` | K17 |
 | Per-db turn | session A's seq=100 does not shift session B's `valid_from` | K18 |
@@ -71,13 +71,12 @@ Environment: `dsh` 0.2.1-rc.5 (`D:\Chaos\dsh-host`) plus a local Anthropic Messa
 - **Loading**: the profile dependency key must be the package name `dsh-chaos-memory`. A local-directory install keys it by directory name (`chaos`), while `cordis.patch.yml` inserts by package name → `Cannot find package 'dsh-chaos-memory'` and the plugin stays inactive. Fixed locally for the web/desktop profiles.
 - **Write**: after one real turn the db holds 1 event + `user.pet.name=团子`, evidence pointing at that event.
 - **Inject**: turn 1 assembles the system prompt before the user message (empty db → nothing injected); from turn 2 the request body carries `<chaos>\n【你记得的关于对方的事】\n- 团子\n</chaos>` and `assembly_log` gets a row (turn_id / claim_id / emergence / packet_hash).
-- **Not firing**: across three turns the stub received no `chaos-extract` request — `extractWithHost` returns because no route is available at `user/message` time, so only rule-based extraction runs in the real host.
+- **LLM extraction**: retried after `request/header` and it works — one `chaos-extract` request per turn, `user.tea=乌龙` stored with priority 90. Two real defects were fixed: (1) no route exists at `user/message` time, so extraction is deferred until `request/header`; (2) `PreparedLlmCall` compares config field by field, so passing `temperature/maxTokens` to `stream()` is rejected — they must be given to `prepareCall`.
 
 ### Not verified
 
 | Item | Missing |
 |---|---|
-| LLM extraction under the real host | three stub-replayed turns received no extraction request: `requestHeader()` has no route at `user/message` time (or `prepareCall` never issues the request); real host currently runs rules only |
 | LLM holdout score for unspoken | needs `DEEPSEEK_API_KEY`; only the pipeline is verified (10/10 with ideal judgments) |
 | Full LLM cost | 18 calls took 114 s; linear extrapolation ≈ 25 h for 240k rows |
 

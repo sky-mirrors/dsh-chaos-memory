@@ -60,14 +60,14 @@ export function apply(ctx) {
   }
 
   // LLM 抽取：用宿主的 ctx.llm（宿主的 key），异步跑、不阻塞会话。
-  // 路由取自 session.requestHeader().config——与 dsh-session-title 同一取法；
-  // 会话第一次请求前还没有路由，那一轮就只用规则版。
+  // 路由由调用方给：user/message 时刻通常还没有 request/header，
+  // 那一轮先挂起，等 request/header 事件到了再补跑（见 pendingExtractions）。
   // 失败只降级到规则版结果：模型是外部输入，不可用不能让这一轮的记忆丢失。
-  const extractWithHost = async (session, text, eid, t) => {
-    const route = session.requestHeader()?.config
-    if (!route) return
+  const extractWithHost = async (session, route, text, eid, t) => {
     const signal = AbortSignal.timeout(20000)
-    const call = await ctx.llm.prepareCall(route, signal)
+    // 覆盖项必须放进 prepareCall 的 config：PreparedLlmCall 会逐字段比对
+    // provider/model/reasoningEffort/temperature/maxTokens，stream 时再改会被直接拒绝。
+    const call = await ctx.llm.prepareCall({ ...route, temperature: 0, maxTokens: 800 }, signal)
     const assembler = new BlockAssembler()
     const messages = [createUserMessage({
       content: [{ type: 'text', text: buildPrompt(text, SLOTS) }],
@@ -78,8 +78,6 @@ export function apply(ctx) {
       messages,
       sessionId: session.id,
       purpose: 'chaos-extract',
-      temperature: 0,
-      maxTokens: 800,
       signal,
     })) {
       assembler.push(chunk)
@@ -109,10 +107,28 @@ export function apply(ctx) {
   // 消费方式与 dsh-session-title 一致。
   // 规则版先写（同步、零成本，兜底）；LLM 抽取在后台补齐语义项。
   // 「未答问题」要看下一轮回应：用户提问先挂起，assistant/message 到达时判定。
+  // user/message 早于 request/header：路由还没出现时先把这轮的抽取挂起，
+  // header 一到就补跑；已抽过的不会入队，不会重复调模型。
+  const pendingExtractions = new Map()
+  const runExtraction = (session, route, item) => {
+    void extractWithHost(session, route, item.text, item.eid, item.t).catch((err) => {
+      ctx.logger.warn(`chaos: LLM 抽取失败，保留规则版结果: ${String(err)}`)
+    })
+  }
+
   const seen = new Set()
   const pendingQuestions = new Map()
   ctx.on('session/event', (session, event) => {
     const sessionKey = session?.id ?? dbPathOf(session)
+
+    if (event.type === 'request/header') {
+      const queue = pendingExtractions.get(sessionKey)
+      const route = event.data?.header?.config
+      if (!queue?.length || !route) return
+      pendingExtractions.delete(sessionKey)
+      for (const item of queue) runExtraction(session, route, item)
+      return
+    }
 
     if (event.type === 'assistant/message') {
       const pending = pendingQuestions.get(sessionKey)
@@ -168,9 +184,13 @@ export function apply(ctx) {
     }
     const question = unansweredCandidate(text, '')
     if (question) pendingQuestions.set(sessionKey, { text, eid, t })
-    void extractWithHost(session, text, eid, t).catch((err) => {
-      ctx.logger.warn(`chaos: LLM 抽取失败，保留规则版结果: ${String(err)}`)
-    })
+    const route = session.requestHeader?.()?.config
+    if (route) runExtraction(session, route, { text, eid, t })
+    else {
+      const queue = pendingExtractions.get(sessionKey) ?? []
+      queue.push({ text, eid, t })
+      pendingExtractions.set(sessionKey, queue)
+    }
   })
 
   // 自动注入：每轮装配系统提示时把该浮现的记忆拼进去，不再依赖模型主动调 chaos_recall。
@@ -343,5 +363,6 @@ export function apply(ctx) {
     clocks.clear()
     budgets.clear()
     pendingQuestions.clear()
+    pendingExtractions.clear()
   }
 }
